@@ -1,0 +1,16 @@
+[Unit]
+# Service systemd chạy MES app tự động khi Ubuntu khởi động.
+Description=YGC MES FastAPI Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/mes-app
+ExecStart=/opt/mes-app/.venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+User=mes
+Group=mes
+
+[Install]
+WantedBy=multi-user.target

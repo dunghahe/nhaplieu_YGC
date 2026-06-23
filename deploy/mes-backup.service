@@ -1,0 +1,10 @@
+[Unit]
+# Job oneshot gọi script backup database SQLite.
+Description=Backup YGC MES SQLite database
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/mes-app
+ExecStart=/opt/mes-app/scripts/backup_mes.sh
+User=mes
+Group=mes

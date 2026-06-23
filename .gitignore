@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.log
+
+data/
+.agents/
+
+.env
+venv/
+.venv/
+
+cloudflared.exe
+cloudflared-live.log
