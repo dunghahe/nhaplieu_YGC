@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=6">
 </head>
 <body class="bg-slate-100 text-slate-900">
   <div id="toastHost" class="fixed right-4 top-4 z-50 space-y-3"></div>
@@ -51,9 +51,16 @@
         </div>
 
         <div class="panel">
-          <div class="mb-4 flex flex-wrap gap-3">
-            <button class="tab-btn active" data-master-tab="machinesTab">Máy CNC</button>
-            <button class="tab-btn" data-master-tab="workersTab">Nhân công</button>
+          <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div class="flex flex-wrap gap-3">
+              <button class="tab-btn active" data-master-tab="machinesTab">Máy CNC</button>
+              <button class="tab-btn" data-master-tab="workersTab">Nhân công</button>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <button id="downloadTemplateBtn" class="btn secondary mini">Tải file mẫu</button>
+              <input type="file" id="excelImportInput" class="hidden" accept=".xlsx">
+              <button id="importExcelBtn" class="btn primary mini">Nhập từ Excel</button>
+            </div>
           </div>
 
           <div id="machinesTab" class="master-tab">
@@ -160,7 +167,6 @@
                 <div><label class="field-label">Mã bản vẽ</label><input id="drawingCode" class="input"></div>
                 <div><label class="field-label">REV</label><input id="drawingRev" class="input"></div>
                 <div><label class="field-label">Chất liệu</label><input id="material" class="input"></div>
-                <div><label class="field-label">Mã nội bộ</label><input id="internalCode" class="input"></div>
                 <div><label class="field-label">Kích cỡ phôi</label><input id="blankSize" class="input"></div>
                 <div><label class="field-label">Ngày nhận ĐH</label><input id="orderReceiveDate" class="input" type="date"></div>
                 <div><label class="field-label">Người giao</label><input id="deliveredBy" class="input"></div>
@@ -223,26 +229,31 @@
           </div>
         </div>
 
-        <div class="panel mb-5">
-          <div class="flex flex-col gap-3 sm:flex-row">
-            <input id="scanLotCode" class="input uppercase-input mono" placeholder="Quét mã lô: PO2026-001-01">
-            <button id="loadLotBtn" class="btn primary sm:w-40">Xác nhận</button>
-          </div>
-        </div>
-
-        <div class="panel mb-5">
-          <div class="mb-3 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-            <div>
-              <div class="panel-title mb-1">Đơn/lô đã tạo</div>
-              <p class="text-sm font-semibold text-slate-500">Chọn PO để xem các lô, bấm vào mã lô để đưa lên ô quét.</p>
+        <div class="grid gap-5 xl:grid-cols-[260px_1fr]">
+          <div class="flex flex-col gap-4">
+            <div class="panel">
+              <label class="field-label">Tìm / Quét QR nhanh</label>
+              <div class="flex flex-col gap-3 sm:flex-row">
+                <input id="scanLotCode" class="input uppercase-input mono" placeholder="Quét mã lô: PO2026-001-01">
+                <button id="loadLotBtn" class="btn primary sm:w-28">Tìm</button>
+              </div>
             </div>
-            <select id="lotOrderSelect" class="input md:max-w-xs"></select>
-          </div>
-          <div id="lotHintGrid" class="lot-hint-grid"></div>
-        </div>
 
-        <div id="lotHeader" class="lot-header hidden"></div>
-        <div id="entryCards" class="grid gap-5 xl:grid-cols-2"></div>
+            <div class="panel flex-1">
+              <div class="mb-3">
+                <div class="panel-title mb-1">Đơn/lô đã tạo</div>
+                <p class="text-sm font-semibold text-slate-500 mb-2">Chọn PO để xem các lô, bấm vào mã lô để đưa lên ô quét.</p>
+                <select id="lotOrderSelect" class="input"></select>
+              </div>
+              <div id="lotHintGrid" class="flex flex-col gap-2 max-h-[60vh] overflow-y-auto pr-1"></div>
+            </div>
+          </div>
+
+          <div>
+            <div id="lotHeader" class="lot-header hidden"></div>
+            <div id="entryCards" class="grid gap-5 xl:grid-cols-2"></div>
+          </div>
+        </div>
       </section>
 
       <section id="reportScreen" class="screen hidden">
@@ -297,6 +308,6 @@
   </div>
 
   <div id="print-area" class="print-area hidden"></div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=6"></script>
 </body>
 </html>

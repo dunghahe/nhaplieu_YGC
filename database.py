@@ -87,7 +87,6 @@ def init_db() -> None:
               drawing_code       TEXT DEFAULT '',
               drawing_rev        TEXT DEFAULT '',
               material           TEXT DEFAULT '',
-              internal_code      TEXT DEFAULT '',
               blank_size         TEXT DEFAULT '',
               order_receive_date DATE,
               blank_issue_date   DATE,
@@ -148,6 +147,7 @@ def init_db() -> None:
               worker_code  TEXT NOT NULL REFERENCES workers(worker_code),
               qty_ok       INTEGER DEFAULT 0,
               qty_ng       INTEGER DEFAULT 0,
+              technical_info TEXT DEFAULT '',
               note         TEXT DEFAULT '',
               created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
               UNIQUE(form_id, line_index)
@@ -174,7 +174,6 @@ def init_db() -> None:
             "drawing_code": "TEXT DEFAULT ''",
             "drawing_rev": "TEXT DEFAULT ''",
             "material": "TEXT DEFAULT ''",
-            "internal_code": "TEXT DEFAULT ''",
             "blank_size": "TEXT DEFAULT ''",
             "order_receive_date": "DATE",
             "blank_issue_date": "DATE",
@@ -410,7 +409,6 @@ ORDER_EXTRA_FIELDS = (
     "drawing_code",
     "drawing_rev",
     "material",
-    "internal_code",
     "blank_size",
     "order_receive_date",
     "blank_issue_date",
@@ -447,15 +445,15 @@ def create_order(order_code: str, part_code: str, total_qty: int, planned_lots: 
                 """
                 INSERT INTO orders(
                     order_code, part_code, total_qty, qty_per_lot, planned_lots, total_lots,
-                    raw_material_code, drawing_code, drawing_rev, material, internal_code,
+                    raw_material_code, drawing_code, drawing_rev, material,
                     blank_size, order_receive_date, blank_issue_date, delivered_by, received_by
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     order_code, part_code, total_qty, qty_per_lot, planned_lots, total_lots,
                     order_extra["raw_material_code"], order_extra["drawing_code"], order_extra["drawing_rev"],
-                    order_extra["material"], order_extra["internal_code"], order_extra["blank_size"],
+                    order_extra["material"], order_extra["blank_size"],
                     order_extra["order_receive_date"], order_extra["blank_issue_date"],
                     order_extra["delivered_by"], order_extra["received_by"],
                 ),
@@ -525,14 +523,14 @@ def update_order(order_code: str, part_code: str, total_qty: int, planned_lots: 
             UPDATE orders
             SET part_code = ?, total_qty = ?, qty_per_lot = ?, planned_lots = ?, total_lots = ?,
                 raw_material_code = ?, drawing_code = ?, drawing_rev = ?, material = ?,
-                internal_code = ?, blank_size = ?, order_receive_date = ?, blank_issue_date = ?,
+                blank_size = ?, order_receive_date = ?, blank_issue_date = ?,
                 delivered_by = ?, received_by = ?
             WHERE order_code = ?
             """,
             (
                 part_code, total_qty, qty_per_lot, planned_lots, total_lots,
                 order_extra["raw_material_code"], order_extra["drawing_code"], order_extra["drawing_rev"],
-                order_extra["material"], order_extra["internal_code"], order_extra["blank_size"],
+                order_extra["material"], order_extra["blank_size"],
                 order_extra["order_receive_date"], order_extra["blank_issue_date"],
                 order_extra["delivered_by"], order_extra["received_by"], order_code,
             ),
@@ -716,8 +714,8 @@ def create_machine_log(form_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         ).fetchone()["next_index"]
         conn.execute(
             """
-            INSERT INTO step_machine_logs(form_id, line_index, machine_code, worker_code, qty_ok, qty_ng, note)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO step_machine_logs(form_id, line_index, machine_code, worker_code, qty_ok, qty_ng, technical_info, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 form_id,
@@ -726,6 +724,7 @@ def create_machine_log(form_id: str, payload: dict[str, Any]) -> dict[str, Any]:
                 payload["worker_code"],
                 int(payload.get("qty_ok") or 0),
                 int(payload.get("qty_ng") or 0),
+                payload.get("technical_info") or "",
                 payload.get("note") or "",
             ),
         )
@@ -744,7 +743,7 @@ def update_machine_log(form_id: str, line_index: int, payload: dict[str, Any]) -
         cur = conn.execute(
             """
             UPDATE step_machine_logs
-            SET machine_code = ?, worker_code = ?, qty_ok = ?, qty_ng = ?, note = ?
+            SET machine_code = ?, worker_code = ?, qty_ok = ?, qty_ng = ?, technical_info = ?, note = ?
             WHERE form_id = ? AND line_index = ?
             """,
             (
@@ -752,6 +751,7 @@ def update_machine_log(form_id: str, line_index: int, payload: dict[str, Any]) -
                 payload["worker_code"],
                 int(payload.get("qty_ok") or 0),
                 int(payload.get("qty_ng") or 0),
+                payload.get("technical_info") or "",
                 payload.get("note") or "",
                 form_id,
                 line_index,

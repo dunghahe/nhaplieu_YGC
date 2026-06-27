@@ -53,7 +53,6 @@ class OrderCreate(BaseModel):
     drawing_code: str = ""
     drawing_rev: str = ""
     material: str = ""
-    internal_code: str = ""
     blank_size: str = ""
     order_receive_date: date | None = None
     blank_issue_date: date | None = None
@@ -70,7 +69,6 @@ class OrderCreate(BaseModel):
         "drawing_code",
         "drawing_rev",
         "material",
-        "internal_code",
         "blank_size",
         "delivered_by",
         "received_by",
@@ -165,6 +163,7 @@ class StepMachineLogInput(BaseModel):
     shift: ShiftName = "KÍP 1"
     qty_ok: int = Field(0, ge=0)
     qty_ng: int = Field(0, ge=0)
+    technical_info: str = ""
     note: str = ""
 
     @field_validator("machine_code", "worker_code")
@@ -172,7 +171,7 @@ class StepMachineLogInput(BaseModel):
     def normalize_log_codes(cls, value: str) -> str:
         return value.strip().upper()
 
-    @field_validator("note")
+    @field_validator("note", "technical_info")
     @classmethod
     def clean_note(cls, value: str) -> str:
         return value.strip()

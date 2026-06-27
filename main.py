@@ -1,10 +1,11 @@
 import os
 from io import BytesIO
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
+import openpyxl
 
 import database
 from models import (
@@ -204,7 +205,7 @@ def api_update_machine(machine_code: str, payload: MachineUpdate):
     """Cập nhật thông tin máy CNC."""
     try:
         return database.update_machine(
-            machine_code.upper(),
+            machine_code,
             payload.machine_name,
             payload.location,
             payload.is_active,
@@ -213,11 +214,51 @@ def api_update_machine(machine_code: str, payload: MachineUpdate):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.get("/api/machines/template")
+def api_machine_template():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Mã máy", "Tên máy", "Vị trí"])
+    ws.append(["M-01", "Máy Phay 01", "Xưởng 1"])
+    buffer = BytesIO()
+    wb.save(buffer)
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=Machine_Template.xlsx"}
+    )
+
+
+@app.post("/api/machines/import")
+def api_import_machines(file: UploadFile = File(...)):
+    if not file.filename.endswith('.xlsx'):
+        raise HTTPException(status_code=400, detail="Chỉ hỗ trợ file Excel (.xlsx)")
+    
+    wb = openpyxl.load_workbook(BytesIO(file.file.read()), data_only=True)
+    sheet = wb.active
+    
+    imported = 0
+    errors = []
+    for row_idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
+        if not row or not row[0]: continue
+        machine_code = str(row[0]).strip()
+        machine_name = str(row[1]).strip() if len(row) > 1 and row[1] else machine_code
+        location = str(row[2]).strip() if len(row) > 2 and row[2] else ""
+        
+        try:
+            database.create_machine(machine_code, machine_name, location)
+            imported += 1
+        except ValueError as e:
+            errors.append(f"Dòng {row_idx} ({machine_code}): {e}")
+            
+    return {"message": f"Đã nhập {imported} máy", "errors": errors}
+
+
 @app.delete("/api/machines/{machine_code}")
 def api_delete_machine(machine_code: str):
     """Soft delete máy CNC bằng cách set inactive."""
     try:
-        database.set_machine_active(machine_code.upper(), 0)
+        database.set_machine_active(machine_code, 0)
         return {"message": "Đã vô hiệu máy"}
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -242,16 +283,55 @@ def api_create_worker(payload: WorkerCreate):
 def api_update_worker(worker_code: str, payload: WorkerUpdate):
     """Cập nhật nhân công."""
     try:
-        return database.update_worker(worker_code.upper(), payload.worker_name, payload.is_active)
+        return database.update_worker(worker_code, payload.worker_name, payload.is_active)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/workers/template")
+def api_worker_template():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Mã NV", "Tên nhân công"])
+    ws.append(["NV-01", "Nguyễn Văn A"])
+    buffer = BytesIO()
+    wb.save(buffer)
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=Worker_Template.xlsx"}
+    )
+
+
+@app.post("/api/workers/import")
+def api_import_workers(file: UploadFile = File(...)):
+    if not file.filename.endswith('.xlsx'):
+        raise HTTPException(status_code=400, detail="Chỉ hỗ trợ file Excel (.xlsx)")
+    
+    wb = openpyxl.load_workbook(BytesIO(file.file.read()), data_only=True)
+    sheet = wb.active
+    
+    imported = 0
+    errors = []
+    for row_idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
+        if not row or not row[0]: continue
+        worker_code = str(row[0]).strip()
+        worker_name = str(row[1]).strip() if len(row) > 1 and row[1] else worker_code
+        
+        try:
+            database.create_worker(worker_code, worker_name)
+            imported += 1
+        except ValueError as e:
+            errors.append(f"Dòng {row_idx} ({worker_code}): {e}")
+            
+    return {"message": f"Đã nhập {imported} nhân công", "errors": errors}
 
 
 @app.delete("/api/workers/{worker_code}")
 def api_delete_worker(worker_code: str):
     """Soft delete nhân công bằng cách set inactive."""
     try:
-        database.set_worker_active(worker_code.upper(), 0)
+        database.set_worker_active(worker_code, 0)
         return {"message": "Đã vô hiệu nhân công"}
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

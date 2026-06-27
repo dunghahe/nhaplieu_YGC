@@ -289,10 +289,11 @@ body { font-family: Inter, system-ui, sans-serif; }
 }
 .machine-row-grid {
   display: grid;
-  grid-template-columns: minmax(160px, 1.2fr) minmax(160px, 1.2fr) minmax(72px, .55fr) minmax(72px, .55fr) minmax(130px, 1fr);
-  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
   align-items: end;
 }
+.col-span-2 { grid-column: span 2 / span 2; }
 .machine-field {
   min-width: 0;
 }
@@ -303,7 +304,6 @@ body { font-family: Inter, system-ui, sans-serif; }
 }
 @container (max-width: 700px) {
   .machine-row-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .machine-field-note { grid-column: 1 / -1; }
 }
 @container (max-width: 420px) {
   .machine-row-grid { grid-template-columns: 1fr; }

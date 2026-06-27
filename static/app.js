@@ -20,7 +20,6 @@ const ORDER_EXTRA_INPUTS = {
   drawing_code: "drawingCode",
   drawing_rev: "drawingRev",
   material: "material",
-  internal_code: "internalCode",
   blank_size: "blankSize",
   order_receive_date: "orderReceiveDate",
   delivered_by: "deliveredBy",
@@ -136,20 +135,26 @@ function activeWorkers() {
   return state.workers.filter((item) => Number(item.is_active) === 1);
 }
 
-function machineOptions(selected = "") {
-  const machines = activeMachines();
-  if (!machines.length) return `<option value="">Chưa có máy active</option>`;
-  return `<option value="">Chọn máy</option>${machines.map((m) =>
-    `<option value="${m.machine_code}" ${m.machine_code === selected ? "selected" : ""}>${m.machine_code} - ${m.machine_name}</option>`
-  ).join("")}`;
+function renderDatalists() {
+  let ml = $("machineDatalist");
+  if (!ml) { ml = document.createElement("datalist"); ml.id = "machineDatalist"; document.body.appendChild(ml); }
+  ml.innerHTML = activeMachines().map(m => `<option value="${m.machine_code} - ${m.machine_name}"></option>`).join("");
+
+  let wl = $("workerDatalist");
+  if (!wl) { wl = document.createElement("datalist"); wl.id = "workerDatalist"; document.body.appendChild(wl); }
+  wl.innerHTML = activeWorkers().map(w => `<option value="${w.worker_code} - ${w.worker_name}"></option>`).join("");
 }
 
-function workerOptions(selected = "") {
-  const workers = activeWorkers();
-  if (!workers.length) return `<option value="">Chưa có nhân công active</option>`;
-  return `<option value="">Chọn nhân công</option>${workers.map((w) =>
-    `<option value="${w.worker_code}" ${w.worker_code === selected ? "selected" : ""}>${w.worker_code} - ${w.worker_name}</option>`
-  ).join("")}`;
+function getMachineDisplayName(code) {
+  if (!code) return "";
+  const m = state.machines.find(x => x.machine_code === code);
+  return m ? `${m.machine_code} - ${m.machine_name}` : code;
+}
+
+function getWorkerDisplayName(code) {
+  if (!code) return "";
+  const w = state.workers.find(x => x.worker_code === code);
+  return w ? `${w.worker_code} - ${w.worker_name}` : code;
 }
 
 function wireNavigation() {
@@ -211,11 +216,13 @@ function wireDeleteModal() {
 async function loadMachines() {
   state.machines = await api("/api/machines");
   renderMachinesTable();
+  renderDatalists();
 }
 
 async function loadWorkers() {
   state.workers = await api("/api/workers");
   renderWorkersTable();
+  renderDatalists();
 }
 
 function renderMachinesTable() {
@@ -229,7 +236,7 @@ function renderMachinesTable() {
         ${state.editingMachineCode === m.machine_code
           ? `<button class="btn mini primary" data-save-machine="${m.machine_code}">Lưu</button><button class="btn mini secondary" data-cancel-machine-edit>Hủy</button>`
           : `<button class="btn mini secondary" data-edit-machine="${m.machine_code}">Sửa</button>`}
-        <button class="btn mini ${Number(m.is_active) ? "danger" : "secondary"}" data-toggle-machine="${m.machine_code}" data-active="${Number(m.is_active) ? 0 : 1}">${Number(m.is_active) ? "Vô hiệu" : "Kích hoạt"}</button>
+        ${Number(m.is_active) ? `<button class="btn mini danger" data-delete-machine="${m.machine_code}">Xóa</button>` : `<button class="btn mini secondary" data-restore-machine="${m.machine_code}">Khôi phục</button>`}
       </td>
     </tr>
   `).join("") || `<tr><td colspan="5" class="text-slate-500">Chưa có máy</td></tr>`;
@@ -249,8 +256,21 @@ function renderMachinesTable() {
       renderMachinesTable();
     });
   });
-  document.querySelectorAll("[data-toggle-machine]").forEach((btn) => {
-    btn.addEventListener("click", () => toggleMachine(btn.dataset.toggleMachine, Number(btn.dataset.active)));
+  document.querySelectorAll("[data-delete-machine]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      openDeleteModal({
+        title: "Xóa máy CNC",
+        message: `Nhập mã xóa để xóa máy ${btn.dataset.deleteMachine}.`,
+        onConfirm: async (deleteCode) => {
+          await api(`/api/machines/${encodeURIComponent(btn.dataset.deleteMachine)}`, { method: "DELETE" });
+          toast("Đã xóa máy", "success");
+          await loadMachines();
+        },
+      });
+    });
+  });
+  document.querySelectorAll("[data-restore-machine]").forEach((btn) => {
+    btn.addEventListener("click", () => toggleMachine(btn.dataset.restoreMachine, 1));
   });
 }
 
@@ -264,7 +284,7 @@ function renderWorkersTable() {
         ${state.editingWorkerCode === w.worker_code
           ? `<button class="btn mini primary" data-save-worker="${w.worker_code}">Lưu</button><button class="btn mini secondary" data-cancel-worker-edit>Hủy</button>`
           : `<button class="btn mini secondary" data-edit-worker="${w.worker_code}">Sửa</button>`}
-        <button class="btn mini ${Number(w.is_active) ? "danger" : "secondary"}" data-toggle-worker="${w.worker_code}" data-active="${Number(w.is_active) ? 0 : 1}">${Number(w.is_active) ? "Vô hiệu" : "Kích hoạt"}</button>
+        ${Number(w.is_active) ? `<button class="btn mini danger" data-delete-worker="${w.worker_code}">Xóa</button>` : `<button class="btn mini secondary" data-restore-worker="${w.worker_code}">Khôi phục</button>`}
       </td>
     </tr>
   `).join("") || `<tr><td colspan="4" class="text-slate-500">Chưa có nhân công</td></tr>`;
@@ -284,8 +304,21 @@ function renderWorkersTable() {
       renderWorkersTable();
     });
   });
-  document.querySelectorAll("[data-toggle-worker]").forEach((btn) => {
-    btn.addEventListener("click", () => toggleWorker(btn.dataset.toggleWorker, Number(btn.dataset.active)));
+  document.querySelectorAll("[data-delete-worker]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      openDeleteModal({
+        title: "Xóa nhân công",
+        message: `Nhập mã xóa để xóa nhân công ${btn.dataset.deleteWorker}.`,
+        onConfirm: async (deleteCode) => {
+          await api(`/api/workers/${encodeURIComponent(btn.dataset.deleteWorker)}`, { method: "DELETE" });
+          toast("Đã xóa nhân công", "success");
+          await loadWorkers();
+        },
+      });
+    });
+  });
+  document.querySelectorAll("[data-restore-worker]").forEach((btn) => {
+    btn.addEventListener("click", () => toggleWorker(btn.dataset.restoreWorker, 1));
   });
 }
 
@@ -341,6 +374,35 @@ async function toggleWorker(workerCode, isActive) {
 }
 
 function wireMaster() {
+  $("downloadTemplateBtn").addEventListener("click", () => {
+    const isMachine = $("machinesTab").classList.contains("hidden") === false;
+    window.open(isMachine ? "/api/machines/template" : "/api/workers/template", "_blank");
+  });
+  $("importExcelBtn").addEventListener("click", () => {
+    $("excelImportInput").click();
+  });
+  $("excelImportInput").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const isMachine = $("machinesTab").classList.contains("hidden") === false;
+    const formData = new FormData();
+    formData.append("file", file);
+    withLoading($("importExcelBtn"), async () => {
+      const res = await fetch(isMachine ? "/api/machines/import" : "/api/workers/import", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Lỗi nhập Excel");
+      toast(data.message, "success");
+      if (data.errors && data.errors.length) {
+        toast(`Có ${data.errors.length} lỗi, xem console`, "warning");
+        console.error("Import errors:", data.errors);
+      }
+      isMachine ? await loadMachines() : await loadWorkers();
+    }).catch(err => toast(err.message, "error")).finally(() => e.target.value = "");
+  });
+
   document.querySelectorAll("[data-master-tab]").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll("[data-master-tab]").forEach((x) => x.classList.remove("active"));
@@ -724,8 +786,16 @@ async function renderLotHints(orderCode) {
     const status = lotOverallStatus(lotRows);
     const doneCount = lotRows.filter((row) => row.status === "done").length;
     const totalSteps = lotRows.filter((row) => row.step_name).length;
-    const progress = totalSteps ? `${doneCount}/${totalSteps} c&ocirc;ng &#273;o&#7841;n` : "Ch&#432;a m&#7903; l&ocirc;";
-    return `<button class="lot-hint ${status}" data-lot-code="${lotCode}"><span class="mono font-extrabold">${displayLotCode(lotCode)}</span><span>SL: ${formatQty(first.qty_per_lot || 0)} c&aacute;i &middot; ${progress}</span><span class="badge ${status}">${statusText(status)}</span></button>`;
+    
+    return `
+    <button class="lot-hint ${status} w-full text-left" data-lot-code="${lotCode}">
+      <div class="flex justify-between items-center w-full">
+        <span class="font-extrabold text-slate-800 text-sm">${displayLotCode(lotCode)}</span>
+        <span class="badge ${status} text-[10px] py-0.5 px-2">${statusText(status)}</span>
+      </div>
+      <div class="text-xs text-slate-500 mt-1">SL: ${formatQty(first.qty_per_lot || 0)} cái · ${totalSteps ? `${doneCount}/${totalSteps} CĐ` : "Chưa mở lô"}</div>
+    </button>
+    `;
   }).join("") || `<div class="text-sm font-semibold text-slate-500">&#272;&#417;n h&agrave;ng n&agrave;y ch&#432;a c&oacute; l&ocirc;</div>`;
   document.querySelectorAll("[data-lot-code]").forEach((btn) => btn.addEventListener("click", () => {
     $("scanLotCode").value = displayLotCode(btn.dataset.lotCode);
@@ -811,7 +881,7 @@ function renderPrintArea(lot) {
         </tr>
         <tr>
           <td colspan="2">Ng&agrave;y nh&#7853;n &#273;&#417;n h&agrave;ng:<br><b>${printValue(order.order_receive_date)}</b></td>
-          <td colspan="2">M&atilde; n&#7897;i b&#7897;:<br><b>${printValue(order.internal_code)}</b></td>
+          <td colspan="2">M&atilde; &#273;&#417;n h&agrave;ng:<br><b>${printValue(order.order_code)}</b></td>
           <td colspan="2">S&#7889; l&#432;&#7907;ng m&#7895;i l&ocirc;:<br><b>${formatQty(lot.qty_per_lot)}</b></td>
         </tr>
         <tr>
@@ -879,17 +949,20 @@ function entryCardHtml(entry, qtyPerLot, opIndex = 1) {
   const missingMaster = !activeMachines().length || !activeWorkers().length;
   return `
     <div class="entry-card card-${entry.status}" data-form-id="${entry.form_id}" data-qty="${qtyPerLot}">
-      <div class="mb-3 flex items-start justify-between gap-3">
-        <div><span class="badge ${entry.status}">OP ${opIndex} · ${statusText(entry.status)}</span><h3 class="mt-2 text-xl font-extrabold">${entry.step_name}</h3><p class="text-sm font-semibold text-slate-500">Lô: ${displayLotCode(entry.lot_code)} · SL: ${formatQty(qtyPerLot)} cái</p></div>
-        <div class="text-right"><p class="mono text-xs font-bold text-slate-400">${entry.form_id}</p></div>
+      <div class="mb-2 flex items-center justify-between gap-2">
+        <div class="flex items-center gap-2">
+          <span class="badge ${entry.status} text-[10px] py-0.5 px-2">OP ${opIndex} · ${statusText(entry.status)}</span>
+          <h3 class="text-lg font-extrabold leading-none">${entry.step_name}</h3>
+        </div>
+        <p class="mono text-[10px] font-bold text-slate-400">${entry.form_id}</p>
       </div>
-      ${missingMaster ? `<div class="error-text mb-3">Cần khai báo ít nhất 1 máy CNC và 1 nhân công active ở màn Master Data trước khi nhập liệu.</div>` : ""}
-      <div class="grid gap-3 md:grid-cols-2">
-        <div><label class="field-label">Ngày</label><input class="input entry-header-field" data-name="work_date" type="date" value="${workDate}"></div>
-        <div><label class="field-label">Kíp</label><select class="input entry-header-field" data-name="shift">${["KÍP 1","KÍP 2","KÍP 3","TĂNG CA"].map(s => `<option ${s === entry.shift ? "selected" : ""}>${s}</option>`).join("")}</select></div>
+      ${missingMaster ? `<div class="error-text mb-2 text-xs">Cần khai báo ít nhất 1 máy CNC và 1 nhân công.</div>` : ""}
+      <div class="grid gap-2 grid-cols-2 mb-2">
+        <div><label class="field-label !mb-1 !text-[11px]">Ngày</label><input class="input entry-header-field !min-h-[30px] !p-1 text-sm" data-name="work_date" type="date" value="${workDate}"></div>
+        <div><label class="field-label !mb-1 !text-[11px]">Kíp</label><select class="input entry-header-field !min-h-[30px] !p-1 text-sm" data-name="shift">${["KÍP 1","KÍP 2","KÍP 3","TĂNG CA"].map(s => `<option ${s === entry.shift ? "selected" : ""}>${s}</option>`).join("")}</select></div>
       </div>
-      <div class="machine-log-box mt-3">
-        <div class="mb-2 flex items-center justify-between gap-2"><div class="font-extrabold">Máy thực hiện / Chuyển máy</div><button class="btn mini secondary" data-add-machine-row="${entry.form_id}">+ Chuyển máy</button></div>
+      <div class="machine-log-box">
+        <div class="mb-2 flex items-center justify-between gap-2"><div class="font-extrabold text-sm">Máy thực hiện / Chuyển máy</div><button class="btn mini secondary" data-add-machine-row="${entry.form_id}">+ Chuyển máy</button></div>
         <div id="machineRows-${entry.form_id}" class="machine-card-grid"></div>
         <div class="calc-line mt-2 font-bold"></div><div class="error-text hidden"></div>
       </div>
@@ -899,7 +972,7 @@ function entryCardHtml(entry, qtyPerLot, opIndex = 1) {
 }
 
 function emptyMachineRow(formId) {
-  return { form_id: formId, line_index: "", machine_code: "", worker_code: "", qty_ok: 0, qty_ng: 0, note: "", _temp: true };
+  return { form_id: formId, line_index: "", machine_code: "", worker_code: "", qty_ok: 0, qty_ng: 0, technical_info: "", note: "", _temp: true };
 }
 
 function renderMachineRows(formId, rows, qtyPerLot) {
@@ -911,26 +984,34 @@ function renderMachineRows(formId, rows, qtyPerLot) {
         <span class="badge ${index ? "partial" : "todo"}">${index ? `Chuyển máy ${index + 1}` : "Máy chính"}</span>
         ${rows.length > 1 ? `<button class="btn mini danger" data-delete-machine-row>Xóa</button>` : ""}
       </div>
-      <div class="machine-row-grid">
-        <div class="machine-field machine-field-wide">
-          <label class="field-label">Máy</label>
-          <select class="input mini-input machine-log-field" data-name="machine_code">${machineOptions(row.machine_code)}</select>
+      <div class="flex flex-col gap-2">
+        <div class="flex gap-2">
+          <div class="machine-field flex-1">
+            <label class="field-label">Máy</label>
+            <input list="machineDatalist" class="input mini-input machine-log-field w-full" data-name="machine_code" placeholder="Chọn máy" value="${getMachineDisplayName(row.machine_code)}">
+          </div>
+          <div class="machine-field flex-1">
+            <label class="field-label">Nhân công</label>
+            <input list="workerDatalist" class="input mini-input machine-log-field w-full" data-name="worker_code" placeholder="Chọn NV" value="${getWorkerDisplayName(row.worker_code)}">
+          </div>
         </div>
-        <div class="machine-field machine-field-wide">
-          <label class="field-label">Nhân công</label>
-          <select class="input mini-input machine-log-field" data-name="worker_code">${workerOptions(row.worker_code)}</select>
-        </div>
-        <div class="machine-field">
-          <label class="field-label">OK</label>
-          <input class="input mini-input machine-log-field" data-name="qty_ok" type="number" min="0" step="1" value="${row.qty_ok || 0}">
-        </div>
-        <div class="machine-field">
-          <label class="field-label">NG</label>
-          <input class="input mini-input machine-log-field" data-name="qty_ng" type="number" min="0" step="1" value="${row.qty_ng || 0}">
-        </div>
-        <div class="machine-field machine-field-note">
-          <label class="field-label">Ghi chú</label>
-          <input class="input mini-input machine-log-field" data-name="note" placeholder="${index ? "Lý do chuyển máy" : "Ghi chú"}" value="${row.note || ""}">
+        <div class="flex gap-2">
+          <div class="machine-field w-16 sm:w-20">
+            <label class="field-label">OK</label>
+            <input class="input mini-input machine-log-field w-full !font-bold !text-green-700" data-name="qty_ok" type="number" min="0" step="1" value="${row.qty_ok || 0}">
+          </div>
+          <div class="machine-field w-16 sm:w-20">
+            <label class="field-label">NG</label>
+            <input class="input mini-input machine-log-field w-full !font-bold !text-red-700" data-name="qty_ng" type="number" min="0" step="1" value="${row.qty_ng || 0}">
+          </div>
+          <div class="machine-field w-1/4 sm:w-32">
+            <label class="field-label">Kỹ thuật</label>
+            <input class="input mini-input machine-log-field w-full" data-name="technical_info" placeholder="Thông số" value="${row.technical_info || ""}">
+          </div>
+          <div class="machine-field flex-1">
+            <label class="field-label">Ghi chú</label>
+            <input class="input mini-input machine-log-field w-full" data-name="note" placeholder="${index ? "Lý do" : "Ghi chú"}" value="${row.note || ""}">
+          </div>
         </div>
       </div>
     </div>
@@ -948,7 +1029,11 @@ function collectMachineRows(formId) {
   return Array.from($(`machineRows-${formId}`).querySelectorAll(".machine-row")).map((el) => {
     const row = { line_index: el.dataset.machineLine ? Number(el.dataset.machineLine) : "", _temp: el.dataset.temp === "1" };
     el.querySelectorAll(".machine-log-field").forEach((field) => {
-      row[field.dataset.name] = ["qty_ok", "qty_ng"].includes(field.dataset.name) ? Number(field.value || 0) : field.value;
+      let val = ["qty_ok", "qty_ng"].includes(field.dataset.name) ? Number(field.value || 0) : field.value;
+      if (field.dataset.name === "machine_code" || field.dataset.name === "worker_code") {
+        val = String(val || "").split(" - ")[0].trim();
+      }
+      row[field.dataset.name] = val;
     });
     return row;
   });
@@ -1006,6 +1091,7 @@ async function saveMachineRow(formId, tr, qtyPerLot) {
     shift: card.querySelector('[data-name="shift"]').value || "KÍP 1",
     qty_ok: row.qty_ok,
     qty_ng: row.qty_ng,
+    technical_info: row.technical_info || "",
     note: row.note || "",
   };
   if (row.line_index) await api(`/api/entries/${encodeURIComponent(formId)}/machines/${row.line_index}`, { method: "PUT", body: JSON.stringify(payload) });
