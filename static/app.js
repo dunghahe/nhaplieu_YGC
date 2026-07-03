@@ -701,8 +701,16 @@ async function showOrderDetails(orderCode) {
 }
 
 function showLotQr(lotCode) {
-  $("printLotCodeInput").value = lotCode;
-  $("printLotByCodeBtn").click();
+  // Navigate to lot screen and load it (printLotCodeInput may not exist anymore)
+  const input = $("printLotCodeInput");
+  if (input) {
+    input.value = displayLotCode(lotCode);
+    const btn = $("printLotByCodeBtn");
+    if (btn) btn.click();
+  } else {
+    // Fallback: just print directly
+    printLot(lotInputToInternalCode(lotCode)).catch(err => toast(err.message, 'error'));
+  }
 }
 
 // JS slugify matching the Python version in database.py
@@ -897,7 +905,9 @@ function setPrintLotOptions(lots) {
 
 function renderLotQrs(lots) {
   setPrintLotOptions(lots);
-  $("lotBarcodeGrid").innerHTML = lots.map((lot) => {
+  const grid = $("lotBarcodeGrid");
+  if (!grid) return; // element removed in new layout
+  grid.innerHTML = lots.map((lot) => {
     const visibleCode = displayLotCode(lot.lot_code);
     const canvasId = lot.lot_code.replaceAll(/[^A-Z0-9]/g, "");
     return `
@@ -939,8 +949,8 @@ function applyOrderToForm(order) {
   $("qtyPerLot").value = order.planned_lots || order.total_lots;
   fillOrderExtra(order);
   updateLotPreview();
-  $("saveOrderBtn").textContent = "C\u1eadp nh\u1eadt \u0111\u01a1n h\u00e0ng";
-  $("cancelOrderEditBtn").classList.remove("hidden");
+  $('saveOrderBtn').textContent = 'Cập nhật đơn hàng';
+  if ($('cancelOrderEditBtn')) $('cancelOrderEditBtn').classList.remove('hidden');
 }
 function startEditOrder(orderCode) {
   api(`/api/orders/${encodeURIComponent(orderCode)}`).then((order) => {
@@ -960,14 +970,13 @@ function startEditOrder(orderCode) {
 
 function resetOrderForm() {
   state.editingOrderCode = null;
-  $("orderCode").value = "";
-  $("orderCode").disabled = false;
-  $("totalQty").value = "";
-  $("qtyPerLot").value = "";
+  if ($("orderCode")) { $("orderCode").value = ""; $("orderCode").disabled = false; }
+  if ($("totalQty")) $("totalQty").value = "";
+  if ($("qtyPerLot")) $("qtyPerLot").value = "";
   resetOrderExtra();
   updateLotPreview();
-  $("saveOrderBtn").textContent = "Phát hành";
-  $("cancelOrderEditBtn").classList.add("hidden");
+  if ($("saveOrderBtn")) $("saveOrderBtn").textContent = "Phát hành";
+  if ($("cancelOrderEditBtn")) $("cancelOrderEditBtn").classList.add("hidden");
 }
 
 function requestDeleteOrder(orderCode) {
