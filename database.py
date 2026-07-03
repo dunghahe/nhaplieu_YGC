@@ -43,15 +43,17 @@ def slugify(text: str) -> str:
     return text
 
 
-def split_lot_quantities(total_qty: int, planned_lots: int) -> list[int]:
-    """Chia theo số lô người dùng nhập; nếu dư thì tạo thêm lô cuối."""
-    if planned_lots > total_qty:
-        raise ValueError("Số lô không được lớn hơn tổng số lượng")
-    base_qty = total_qty // planned_lots
-    remainder = total_qty % planned_lots
-    lots = [base_qty for _ in range(planned_lots)]
-    if remainder:
-        lots.append(remainder)
+def split_lot_quantities(total_qty: int, qty_per_lot: int) -> list[int]:
+    """Chia lô theo số PCS/lô người dùng nhập."""
+    if qty_per_lot <= 0:
+        raise ValueError("Số lượng PCS/lô phải > 0")
+    if qty_per_lot > total_qty:
+        return [total_qty]
+    import math
+    total_lots = math.ceil(total_qty / qty_per_lot)
+    lots = [qty_per_lot for _ in range(total_lots - 1)]
+    last_lot_qty = total_qty % qty_per_lot or qty_per_lot
+    lots.append(last_lot_qty)
     return lots
 
 
@@ -162,6 +164,13 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE part_steps ADD COLUMN cycle_time_seconds INTEGER NOT NULL DEFAULT 1"
             )
+        machine_logs_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(step_machine_logs)").fetchall()
+        }
+        if "tech_code" not in machine_logs_cols:
+            conn.execute("ALTER TABLE step_machine_logs ADD COLUMN tech_code TEXT DEFAULT ''")
+        if "shift" not in machine_logs_cols:
+            conn.execute("ALTER TABLE step_machine_logs ADD COLUMN shift TEXT DEFAULT 'KÍP 1'")
         order_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(orders)").fetchall()
@@ -378,6 +387,20 @@ def get_part_steps(part_code: str) -> list[dict[str, Any]]:
         ).fetchall()
 
 
+def update_part_steps(part_code: str, steps: list[dict[str, Any]]) -> None:
+    """Cập nhật lại toàn bộ quy trình công đoạn cho một mã hàng."""
+    with connect() as conn:
+        part = conn.execute("SELECT id FROM parts WHERE part_code = ?", (part_code,)).fetchone()
+        if not part:
+            raise LookupError("Không tìm thấy mã hàng")
+        conn.execute("DELETE FROM part_steps WHERE part_id = ?", (part["id"],))
+        for step in steps:
+            conn.execute(
+                "INSERT INTO part_steps (part_id, step_name, step_order, cycle_time_seconds) VALUES (?, ?, ?, ?)",
+                (part["id"], step["step_name"].strip(), step["step_order"], step["duration_seconds"]),
+            )
+
+
 def get_orders() -> list[dict[str, Any]]:
     """Lấy đơn hàng kèm phần trăm hoàn thành dựa trên step_entries đã done."""
     with connect() as conn:
@@ -430,14 +453,13 @@ def normalize_order_extra(extra: dict[str, Any] | None = None) -> dict[str, Any]
     return normalized
 
 
-def create_order(order_code: str, part_code: str, total_qty: int, planned_lots: int, extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Tạo đơn hàng, tự tính pcs/lô chuẩn từ số lô người dùng nhập."""
+def create_order(order_code: str, part_code: str, total_qty: int, qty_per_lot: int, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Tạo đơn hàng, chia lô dựa trên qty_per_lot."""
     if not get_part(part_code):
         raise LookupError("Mã hàng không tồn tại")
 
-    lot_quantities = split_lot_quantities(total_qty, planned_lots)
+    lot_quantities = split_lot_quantities(total_qty, qty_per_lot)
     total_lots = len(lot_quantities)
-    qty_per_lot = lot_quantities[0]
     order_extra = normalize_order_extra(extra)
     with connect() as conn:
         try:
@@ -451,7 +473,7 @@ def create_order(order_code: str, part_code: str, total_qty: int, planned_lots: 
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    order_code, part_code, total_qty, qty_per_lot, planned_lots, total_lots,
+                    order_code, part_code, total_qty, qty_per_lot, total_lots, total_lots,
                     order_extra["raw_material_code"], order_extra["drawing_code"], order_extra["drawing_rev"],
                     order_extra["material"], order_extra["blank_size"],
                     order_extra["order_receive_date"], order_extra["blank_issue_date"],
@@ -477,7 +499,7 @@ def create_order(order_code: str, part_code: str, total_qty: int, planned_lots: 
         "part_code": part_code,
         "total_qty": total_qty,
         "qty_per_lot": qty_per_lot,
-        "planned_lots": planned_lots,
+        "planned_lots": total_lots,
         "total_lots": total_lots,
         "lots": lots,
         **order_extra,
@@ -714,8 +736,8 @@ def create_machine_log(form_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         ).fetchone()["next_index"]
         conn.execute(
             """
-            INSERT INTO step_machine_logs(form_id, line_index, machine_code, worker_code, qty_ok, qty_ng, technical_info, note)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO step_machine_logs(form_id, line_index, machine_code, worker_code, qty_ok, qty_ng, technical_info, note, tech_code, shift)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 form_id,
@@ -726,6 +748,8 @@ def create_machine_log(form_id: str, payload: dict[str, Any]) -> dict[str, Any]:
                 int(payload.get("qty_ng") or 0),
                 payload.get("technical_info") or "",
                 payload.get("note") or "",
+                payload.get("tech_code") or "",
+                payload.get("shift") or "KÍP 1",
             ),
         )
         recalc_entry_from_machine_logs(conn, form_id)
@@ -743,7 +767,7 @@ def update_machine_log(form_id: str, line_index: int, payload: dict[str, Any]) -
         cur = conn.execute(
             """
             UPDATE step_machine_logs
-            SET machine_code = ?, worker_code = ?, qty_ok = ?, qty_ng = ?, technical_info = ?, note = ?
+            SET machine_code = ?, worker_code = ?, qty_ok = ?, qty_ng = ?, technical_info = ?, note = ?, tech_code = ?, shift = ?
             WHERE form_id = ? AND line_index = ?
             """,
             (

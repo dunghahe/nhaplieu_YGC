@@ -22,8 +22,6 @@ const ORDER_EXTRA_INPUTS = {
   material: "material",
   blank_size: "blankSize",
   order_receive_date: "orderReceiveDate",
-  delivered_by: "deliveredBy",
-  received_by: "receivedBy",
 };
 const ORDER_DATE_FIELDS = new Set(["order_receive_date"]);
 
@@ -42,11 +40,7 @@ function formatDivision(value) {
 
 function formatCycle(seconds) {
   const total = Number(seconds || 0);
-  const minutes = Math.floor(total / 60);
-  const remainSeconds = total % 60;
-  if (minutes && remainSeconds) return `${minutes} phút ${remainSeconds} giây`;
-  if (minutes) return `${minutes} phút`;
-  return `${remainSeconds} giây`;
+  return `${total} giây`;
 }
 
 function escapeHtml(value) {
@@ -448,16 +442,69 @@ let newSteps = [];
 
 function renderStepList() {
   $("stepList").innerHTML = newSteps.map((step, index) => `
-    <div class="flex items-center justify-between rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-      <span class="font-bold">${index + 1}. ${step.step_name}</span>
-      <span class="text-sm font-bold text-slate-500">Cycle: ${formatCycle(step.cycle_time_seconds)}</span>
-      <button class="text-sm font-bold text-red-600" data-remove-step="${index}">Xóa</button>
+    <div class="draggable-item flex items-center justify-between rounded-md border border-slate-200 bg-slate-50 px-3 py-2" draggable="true" data-index="${index}">
+      <div class="flex items-center gap-2">
+        <button class="text-slate-400 hover:text-slate-700" data-move-up="${index}" ${index === 0 ? 'disabled style="opacity: 0.2"' : ''}>▲</button>
+        <button class="text-slate-400 hover:text-slate-700" data-move-down="${index}" ${index === newSteps.length - 1 ? 'disabled style="opacity: 0.2"' : ''}>▼</button>
+        <span class="font-bold">${index + 1}. ${step.step_name}</span>
+      </div>
+      <div class="flex items-center gap-4">
+        <span class="text-sm font-bold text-slate-500">${step.cycle_time_seconds} giây</span>
+        <button class="text-sm font-bold text-red-600 hover:text-red-800" data-remove-step="${index}">Xóa</button>
+      </div>
     </div>
   `).join("");
+  
   document.querySelectorAll("[data-remove-step]").forEach((btn) => {
     btn.addEventListener("click", () => {
       newSteps.splice(Number(btn.dataset.removeStep), 1);
       renderStepList();
+    });
+  });
+  document.querySelectorAll("[data-move-up]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const idx = Number(btn.dataset.moveUp);
+      if (idx > 0) {
+        [newSteps[idx - 1], newSteps[idx]] = [newSteps[idx], newSteps[idx - 1]];
+        renderStepList();
+      }
+    });
+  });
+  document.querySelectorAll("[data-move-down]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const idx = Number(btn.dataset.moveDown);
+      if (idx < newSteps.length - 1) {
+        [newSteps[idx + 1], newSteps[idx]] = [newSteps[idx], newSteps[idx + 1]];
+        renderStepList();
+      }
+    });
+  });
+
+  let draggedIdx = null;
+  document.querySelectorAll(".draggable-item").forEach(item => {
+    item.addEventListener("dragstart", (e) => {
+      draggedIdx = Number(item.dataset.index);
+      setTimeout(() => item.classList.add("dragging"), 0);
+    });
+    item.addEventListener("dragend", (e) => {
+      item.classList.remove("dragging");
+      document.querySelectorAll(".draggable-item").forEach(el => el.classList.remove("drag-over"));
+    });
+    item.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      item.classList.add("drag-over");
+    });
+    item.addEventListener("dragleave", (e) => {
+      item.classList.remove("drag-over");
+    });
+    item.addEventListener("drop", (e) => {
+      e.preventDefault();
+      const targetIdx = Number(item.dataset.index);
+      if (draggedIdx !== null && draggedIdx !== targetIdx) {
+        const [removed] = newSteps.splice(draggedIdx, 1);
+        newSteps.splice(targetIdx, 0, removed);
+        renderStepList();
+      }
     });
   });
 }
@@ -482,22 +529,15 @@ function startEditPart(partCode) {
   if (!part) return;
   state.editingPartCode = part.part_code;
   $("partCode").value = part.part_code;
+  $("partCode").readOnly = true;
+  $("partModalTitle").textContent = `Sửa mã hàng: ${part.part_code}`;
   newSteps = part.steps.map((step) => ({ step_name: step.step_name, cycle_time_seconds: Number(step.cycle_time_seconds || 1) }));
   renderStepList();
-  $("savePartBtn").textContent = "Cập nhật mã hàng";
-  $("cancelPartEditBtn").classList.remove("hidden");
+  $("partModal").classList.remove("hidden");
 }
 
 function resetPartForm() {
-  state.editingPartCode = null;
-  $("partCode").value = "";
-  $("stepName").value = "";
-  $("stepCycleMinutes").value = "";
-  $("stepCycleSeconds").value = "";
-  newSteps = [];
-  renderStepList();
-  $("savePartBtn").textContent = "Lưu mã hàng";
-  $("cancelPartEditBtn").classList.add("hidden");
+  $("partModal").classList.add("hidden");
 }
 
 function collectOrderExtra() {
@@ -530,30 +570,48 @@ function requestDeletePart(partCode) {
 }
 
 function wireParts() {
+  $("openCreatePartModalBtn").addEventListener("click", () => {
+    state.editingPartCode = null;
+    $("partCode").value = "";
+    $("partCode").readOnly = false;
+    $("partModalTitle").textContent = "Tạo mã hàng mới";
+    $("stepName").value = "";
+    $("stepCycleSeconds").value = "";
+    newSteps = [];
+    renderStepList();
+    $("partModal").classList.remove("hidden");
+  });
+  
+  $("closePartModalBtn").addEventListener("click", resetPartForm);
+  $("cancelPartModalBtn").addEventListener("click", resetPartForm);
+  $("partModal").addEventListener("click", (e) => {
+    if (e.target.id === "partModal") resetPartForm();
+  });
+
   $("addStepBtn").addEventListener("click", () => {
     const value = $("stepName").value.trim().toUpperCase();
-    const cycleMinutes = Number($("stepCycleMinutes").value || 0);
     const cycleSeconds = Number($("stepCycleSeconds").value || 0);
-    const cycleTime = cycleMinutes * 60 + cycleSeconds;
     if (!value) return toast("Vui lòng nhập tên công đoạn", "warning");
-    if (cycleMinutes < 0 || cycleSeconds < 0 || cycleSeconds >= 60) return toast("Cycle time: giây phải từ 0 đến 59", "warning");
-    if (cycleTime <= 0) return toast("Vui lòng nhập cycle time lớn hơn 0", "warning");
-    newSteps.push({ step_name: value, cycle_time_seconds: cycleTime });
+    if (cycleSeconds <= 0) return toast("Vui lòng nhập số giây lớn hơn 0", "warning");
+    newSteps.push({ step_name: value, cycle_time_seconds: cycleSeconds });
     $("stepName").value = "";
-    $("stepCycleMinutes").value = "";
     $("stepCycleSeconds").value = "";
     renderStepList();
   });
-  ["stepName", "stepCycleMinutes", "stepCycleSeconds"].forEach((id) => $(id).addEventListener("keydown", (e) => {
+  
+  ["stepName", "stepCycleSeconds"].forEach((id) => $(id)?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") $("addStepBtn").click();
   }));
-  $("cancelPartEditBtn").addEventListener("click", resetPartForm);
+
   $("savePartBtn").addEventListener("click", () => withLoading($("savePartBtn"), async () => {
     const partCode = $("partCode").value.trim().toUpperCase();
     if (!partCode || !newSteps.length) return toast("Nhập mã hàng và ít nhất 1 công đoạn", "warning");
-    const payload = { part_code: partCode, steps: newSteps };
-    if (state.editingPartCode) await api(`/api/parts/${encodeURIComponent(state.editingPartCode)}`, { method: "PUT", body: JSON.stringify(payload) });
-    else await api("/api/parts", { method: "POST", body: JSON.stringify(payload) });
+    const stepsPayload = newSteps.map((s, idx) => ({ step_name: s.step_name, step_order: idx + 1, duration_seconds: s.cycle_time_seconds }));
+    if (state.editingPartCode) {
+      await api(`/api/parts/${encodeURIComponent(state.editingPartCode)}/steps`, { method: "PUT", body: JSON.stringify(stepsPayload) });
+    } else {
+      await api("/api/parts", { method: "POST", body: JSON.stringify({ part_code: partCode, steps: stepsPayload.map(s => ({ step_name: s.step_name, cycle_time_seconds: s.duration_seconds })) }) });
+    }
     toast("Đã lưu mã hàng", "success");
     resetPartForm();
     await loadParts();
@@ -574,32 +632,249 @@ function updateLotPreview() {
   const total = Number($("totalQty").value || 0);
   const plannedLots = Number($("qtyPerLot").value || 0);
   if (total > 0 && plannedLots > 0) {
-    if (!Number.isInteger(total) || !Number.isInteger(plannedLots)) return $("lotCountPreview").textContent = "Tổng SL và số lô phải là số nguyên";
-    if (plannedLots > total) return $("lotCountPreview").textContent = "Số lô không được lớn hơn tổng số lượng";
-    const baseQty = Math.floor(total / plannedLots);
-    const remainder = total % plannedLots;
-    const actualLots = plannedLots + (remainder ? 1 : 0);
+    if (!Number.isInteger(total) || !Number.isInteger(plannedLots)) return $("lotCountPreview").textContent = "Tổng SL và số PCS / lô phải là số nguyên";
+    if (plannedLots > total) return $("lotCountPreview").textContent = "Số PCS / lô không được lớn hơn tổng số lượng";
+    const baseQty = plannedLots;
+    const actualLots = Math.floor(total / baseQty);
+    const remainder = total % baseQty;
+    const totalLots = actualLots + (remainder ? 1 : 0);
     $("lotCountPreview").textContent = remainder
-      ? `${total} / ${plannedLots} lô = ${formatDivision(total / plannedLots)} pcs/lô → ${plannedLots} lô x ${baseQty} pcs, dư ${remainder} pcs → phát hành ${actualLots} lô`
-      : `${total} / ${plannedLots} lô = ${baseQty} pcs/lô → phát hành ${actualLots} lô`;
+      ? `${totalLots} lô (${actualLots} lô x ${baseQty} pcs + 1 lô dư ${remainder} pcs)`
+      : `${totalLots} lô (${actualLots} lô x ${baseQty} pcs)`;
   } else {
     $("lotCountPreview").textContent = "0";
   }
 }
 
+async function showOrderDetails(orderCode) {
+  const order = state.orders.find(o => o.order_code === orderCode);
+  if (!order) return;
+  
+  $("detailOrderTitle").textContent = order.order_code;
+  $("detailPartCode").textContent = order.part_code;
+  $("detailTotalQty").textContent = formatQty(order.total_qty);
+  $("detailTotalLots").textContent = order.total_lots;
+  $("detailProgress").textContent = (order.progress_percent || 0) + "%";
+  
+  $("ordersListSection").classList.add("hidden");
+  $("orderDetailSection").classList.remove("hidden");
+  
+  try {
+    const reportData = await api(`/api/reports/order/${encodeURIComponent(orderCode)}`);
+    // Group by lot_code
+    const lotsMap = {};
+    for (const row of reportData) {
+      if (!lotsMap[row.lot_code]) {
+        lotsMap[row.lot_code] = {
+          lot_code: row.lot_code,
+          qty: row.qty_per_lot,
+          steps: []
+        };
+      }
+      lotsMap[row.lot_code].steps.push(row);
+    }
+    
+    const sortedLots = Object.values(lotsMap).sort((a, b) => a.lot_code.localeCompare(b.lot_code));
+    $("detailLotsTable").innerHTML = sortedLots.map(lot => {
+      const stepsHtml = lot.steps.map((s, i) => {
+        let badgeClass = s.status === 'done' ? 'done' : (s.status === 'partial' ? 'partial' : 'todo');
+        return `<span class="badge ${badgeClass} mr-1 mb-1" title="${escapeHtml(s.machines_used || '')}">${i + 1}. ${s.step_name}</span>`;
+      }).join("");
+      
+      return `
+        <tr>
+          <td class="mono font-bold">${lot.lot_code}</td>
+          <td>${formatQty(lot.qty)}</td>
+          <td>${stepsHtml}</td>
+          <td>
+            <div class="flex gap-2">
+              <button class="btn mini secondary" onclick="showLotQr('${lot.lot_code}')">Xem QR</button>
+              <button class="btn mini primary" onclick="printExportSheet('${lot.lot_code}')">In phiếu xuất kho</button>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join("");
+  } catch (err) {
+    toast("Lỗi tải chi tiết đơn hàng", "error");
+  }
+}
+
+function showLotQr(lotCode) {
+  $("printLotCodeInput").value = lotCode;
+  $("printLotByCodeBtn").click();
+}
+
+// JS slugify matching the Python version in database.py
+function slugify(text) {
+  // Normalize NFD and remove combining diacritics (Mn category)
+  text = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  text = text.replace(/\s+/g, "").toUpperCase();
+  text = text.replace(/[^A-Z0-9_-]/g, "");
+  return text;
+}
+
+function buildFormId(lotCode, stepName) {
+  return `FORM-${lotCode}-${slugify(stepName)}`;
+}
+
+async function printExportSheet(lotCode) {
+  const lot = await api(`/api/lots/${encodeURIComponent(lotCode)}`).catch(() => null);
+  if (!lot) return toast("Không tìm thấy lô", "error");
+
+  // Ensure steps are initialized
+  let lotData = lot;
+  if (!lotData.entries || !lotData.entries.length) {
+    lotData = await api(`/api/lots/${encodeURIComponent(lotCode)}/init-steps`, { method: "POST" }).catch(() => lot);
+  }
+
+  const entries = lotData.entries || [];
+  const machines = activeMachines();
+  const workers = activeWorkers();
+
+  $("exportSheetModalTitle").textContent = `In phiếu xuất kho`;
+  $("exportSheetModalLotCode").textContent = `Lô: ${displayLotCode(lotCode)} · ${lot.order_code} · ${lot.part_code}`;
+
+  const shiftOptions = ["KÍP 1", "KÍP 2", "KÍP 3", "TĂNG CA"]
+    .map(s => `<option value="${s}">${s}</option>`).join("");
+  const machineOptions = `<option value="">-- Chọn máy --</option>` +
+    machines.map(m => `<option value="${m.machine_code}">${m.machine_code} - ${m.machine_name}</option>`).join("");
+  const workerOptions = `<option value="">-- Chọn NV --</option>` +
+    workers.map(w => `<option value="${w.worker_code}">${w.worker_code} - ${w.worker_name}</option>`).join("");
+
+  $("exportStepsList").innerHTML = entries.map((entry, idx) => `
+    <div class="rounded-lg border border-slate-200 bg-slate-50 p-4" data-export-form-id="${entry.form_id}">
+      <div class="font-extrabold text-sm mb-3 text-slate-700">OP${idx + 1}: ${escapeHtml(entry.step_name)}</div>
+      <div class="grid grid-cols-2 gap-3 mb-3">
+        <div>
+          <label class="field-label">Máy</label>
+          <select class="input export-field" data-field="machine_code">
+            ${machineOptions}
+          </select>
+        </div>
+        <div>
+          <label class="field-label">Kíp</label>
+          <select class="input export-field" data-field="shift">
+            ${shiftOptions}
+          </select>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-3 mb-3">
+        <div>
+          <label class="field-label">Người làm</label>
+          <select class="input export-field" data-field="worker_code">
+            ${workerOptions}
+          </select>
+        </div>
+        <div>
+          <label class="field-label">Kỹ thuật (tùy chọn)</label>
+          <select class="input export-field" data-field="tech_code">
+            ${workerOptions}
+          </select>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="field-label">Ngày làm</label>
+          <input type="date" class="input export-field" data-field="work_date" value="${today()}">
+        </div>
+        <div>
+          <label class="field-label">Thông số kỹ thuật</label>
+          <input type="text" class="input export-field" data-field="technical_info" placeholder="Tùy chọn">
+        </div>
+      </div>
+    </div>
+  `).join("") || `<p class="text-slate-500 text-sm">Lô chưa có công đoạn nào.</p>`;
+
+  // Store lot data for save
+  $("exportSheetModal").dataset.lotCode = lotCode;
+  $("exportSheetModal").dataset.qtyPerLot = lot.qty_per_lot;
+  $("exportSheetModal").classList.remove("hidden");
+}
+
+async function saveAndPrint() {
+  const modal = $("exportSheetModal");
+  const lotCode = modal.dataset.lotCode;
+  const qtyPerLot = Number(modal.dataset.qtyPerLot || 0);
+  const btn = $("saveAndPrintBtn");
+
+  if (!lotCode) return;
+
+  const stepDivs = modal.querySelectorAll("[data-export-form-id]");
+  let savedAny = false;
+
+  await withLoading(btn, async () => {
+    for (const div of stepDivs) {
+      const formId = div.dataset.exportFormId;
+      const machine_code = div.querySelector('[data-field="machine_code"]').value;
+      const worker_code = div.querySelector('[data-field="worker_code"]').value;
+      const shift = div.querySelector('[data-field="shift"]').value;
+      const tech_code = div.querySelector('[data-field="tech_code"]').value;
+      const work_date = div.querySelector('[data-field="work_date"]').value || null;
+      const technical_info = div.querySelector('[data-field="technical_info"]').value;
+
+      // Skip step if machine or worker not filled
+      if (!machine_code || !worker_code) continue;
+
+      const payload = {
+        machine_code,
+        worker_code,
+        shift,
+        tech_code,
+        work_date,
+        technical_info,
+        qty_ok: qtyPerLot,
+        qty_ng: 0,
+        note: "",
+      };
+
+      try {
+        await api(`/api/entries/${encodeURIComponent(formId)}/machines`, { method: "POST", body: JSON.stringify(payload) });
+        savedAny = true;
+      } catch (err) {
+        // If already exists, try PUT with line_index 1
+        try {
+          await api(`/api/entries/${encodeURIComponent(formId)}/machines/1`, { method: "PUT", body: JSON.stringify(payload) });
+          savedAny = true;
+        } catch (_) {
+          // ignore
+        }
+      }
+    }
+
+    if (savedAny) toast("Đã lưu thông tin nhập liệu", "success");
+    modal.classList.add("hidden");
+
+    // Print the lot sheet
+    await printLot(lotCode);
+  }).catch(err => toast(err.message, "error"));
+}
+
+function wireExportSheet() {
+  $("closeExportSheetModalBtn").addEventListener("click", () => $("exportSheetModal").classList.add("hidden"));
+  $("cancelExportSheetBtn").addEventListener("click", () => $("exportSheetModal").classList.add("hidden"));
+  $("exportSheetModal").addEventListener("click", (e) => {
+    if (e.target.id === "exportSheetModal") $("exportSheetModal").classList.add("hidden");
+  });
+  $("saveAndPrintBtn").addEventListener("click", saveAndPrint);
+}
+
 function renderOrdersHistory() {
   $("ordersHistoryTable").innerHTML = state.orders.map((order) => `
     <tr>
-      <td class="mono font-bold">${order.order_code}</td><td>${order.part_code}</td><td>${formatQty(order.total_qty)}</td>
-      <td>${order.planned_lots || order.total_lots}</td><td>${formatQty(order.qty_per_lot)}</td><td>${order.total_lots}</td>
+      <td class="mono font-bold text-blue-600 cursor-pointer hover:underline" onclick="showOrderDetails('${order.order_code}')">${order.order_code}</td>
+      <td>${order.part_code}</td><td>${formatQty(order.total_qty)}</td>
+      <td>${formatQty(order.qty_per_lot)}</td><td>${order.total_lots}</td>
       <td><div class="progress-cell"><div class="progress-bar"><span style="width:${order.progress_percent || 0}%"></span></div><span>${order.progress_percent || 0}%</span></div></td>
       <td>${order.created_at || ""}</td>
-      <td><div class="flex flex-wrap gap-2"><button class="btn mini secondary" data-edit-order="${order.order_code}">Sửa</button><button class="btn mini secondary" data-show-order="${order.order_code}">Xem QR</button><button class="btn mini danger" data-delete-order="${order.order_code}">Xóa</button></div></td>
+      <td>
+        <div class="flex flex-wrap gap-2">
+          <button class="btn mini secondary" onclick="startEditOrder('${order.order_code}')">Sửa</button>
+          <button class="btn mini danger" onclick="requestDeleteOrder('${order.order_code}')">Xóa</button>
+        </div>
+      </td>
     </tr>
-  `).join("") || `<tr><td colspan="9" class="text-slate-500">Chưa có đơn hàng</td></tr>`;
-  document.querySelectorAll("[data-show-order]").forEach((btn) => btn.addEventListener("click", () => showOrderQrs(btn.dataset.showOrder)));
-  document.querySelectorAll("[data-edit-order]").forEach((btn) => btn.addEventListener("click", () => startEditOrder(btn.dataset.editOrder)));
-  document.querySelectorAll("[data-delete-order]").forEach((btn) => btn.addEventListener("click", () => requestDeleteOrder(btn.dataset.deleteOrder)));
+  `).join("") || `<tr><td colspan="8" class="text-slate-500">Chưa có đơn hàng</td></tr>`;
 }
 
 function lotInputToInternalCode(value) {
@@ -668,8 +943,19 @@ function applyOrderToForm(order) {
   $("cancelOrderEditBtn").classList.remove("hidden");
 }
 function startEditOrder(orderCode) {
-  const order = state.orders.find((item) => item.order_code === orderCode);
-  applyOrderToForm(order);
+  api(`/api/orders/${encodeURIComponent(orderCode)}`).then((order) => {
+    state.editingOrderCode = order.order_code;
+    $("orderCode").value = order.order_code;
+    $("orderCode").readOnly = true;
+    $("orderPartCode").value = order.part_code;
+    $("totalQty").value = order.total_qty;
+    $("qtyPerLot").value = order.qty_per_lot;
+    fillOrderExtra(order);
+    updateLotPreview();
+    $("orderModalTitle").textContent = `Sửa đơn hàng: ${order.order_code}`;
+    $("saveOrderBtn").textContent = "Cập nhật đơn hàng";
+    $("orderModal").classList.remove("hidden");
+  }).catch(err => toast(err.message, "error"));
 }
 
 function resetOrderForm() {
@@ -698,32 +984,38 @@ function requestDeleteOrder(orderCode) {
 }
 
 function wireOrders() {
-  ["totalQty", "qtyPerLot"].forEach((id) => $(id).addEventListener("input", updateLotPreview));
-  $("printLotsBtn").addEventListener("click", () => {
-    const grid = $("lotBarcodeGrid");
-    const parent = grid.parentElement;
-    const nextSibling = grid.nextSibling;
-    // Di chuyển grid lên thành con trực tiếp của body để CSS display:none hoạt động
-    document.body.appendChild(grid);
-    document.body.classList.add("printing-qr-labels");
-    window.print();
-    setTimeout(() => {
-      document.body.classList.remove("printing-qr-labels");
-      // Phục hồi vị trí cũ
-      parent.insertBefore(grid, nextSibling);
-    }, 600);
+  // "Tạo đơn hàng" button opens modal
+  $("openCreateOrderModalBtn").addEventListener("click", () => {
+    state.editingOrderCode = null;
+    $("orderCode").value = "";
+    $("orderCode").readOnly = false;
+    $("orderPartCode").value = "";
+    $("totalQty").value = "";
+    $("qtyPerLot").value = "";
+    $("lotCountPreview").textContent = "0";
+    $("orderModalTitle").textContent = "Tạo đơn hàng mới";
+    $("saveOrderBtn").textContent = "Phát hành đơn hàng";
+    resetOrderExtra();
+    $("orderModal").classList.remove("hidden");
   });
-  $("showPrintSheetBtn").addEventListener("click", () => {
-    $("printLotPicker")?.scrollIntoView({ behavior: "smooth", block: "center" });
-    $("printLotCodeInput")?.focus();
+
+  $("closeOrderModalBtn").addEventListener("click", () => $("orderModal").classList.add("hidden"));
+  $("cancelOrderModalBtn").addEventListener("click", () => $("orderModal").classList.add("hidden"));
+  $("orderModal").addEventListener("click", (e) => {
+    if (e.target.id === "orderModal") $("orderModal").classList.add("hidden");
   });
-  $("printLotByCodeBtn").addEventListener("click", () => {
-    const internalCode = lotInputToInternalCode($("printLotCodeInput").value);
-    if (!internalCode) return toast("Vui l\u00f2ng nh\u1eadp ho\u1eb7c ch\u1ecdn m\u00e3 l\u00f4 c\u1ea7n in", "warning");
-    printLot(internalCode).catch((err) => toast(err.message, "error"));
+
+  // Back button: hide detail, show list
+  $("backToOrdersBtn").addEventListener("click", () => {
+    $("orderDetailSection").classList.add("hidden");
+    $("ordersListSection").classList.remove("hidden");
+    loadOrders();
   });
-  $("refreshOrdersBtn").addEventListener("click", () => loadOrders().catch((err) => toast(err.message, "error")));
-  $("cancelOrderEditBtn").addEventListener("click", resetOrderForm);
+
+  [("totalQty", "qtyPerLot")].forEach((id) => $(id) && $(id).addEventListener("input", updateLotPreview));
+  $("totalQty").addEventListener("input", updateLotPreview);
+  $("qtyPerLot").addEventListener("input", updateLotPreview);
+
   $("saveOrderBtn").addEventListener("click", () => withLoading($("saveOrderBtn"), async () => {
     const payload = {
       order_code: $("orderCode").value.trim().toUpperCase(),
@@ -733,14 +1025,14 @@ function wireOrders() {
       ...collectOrderExtra(),
     };
     if (!payload.order_code || !payload.part_code || payload.total_qty <= 0 || payload.qty_per_lot <= 0) return toast("Vui lòng nhập đủ thông tin đơn hàng", "warning");
-    if (!Number.isInteger(payload.total_qty) || !Number.isInteger(payload.qty_per_lot)) return toast("Tổng SL và số lô phải là số nguyên", "warning");
-    if (payload.qty_per_lot > payload.total_qty) return toast("Số lô không được lớn hơn tổng số lượng", "warning");
+    if (!Number.isInteger(payload.total_qty) || !Number.isInteger(payload.qty_per_lot)) return toast("Tổng SL và số PCS/lô phải là số nguyên", "warning");
+    if (payload.qty_per_lot > payload.total_qty) return toast("Số PCS/lô không được lớn hơn tổng số lượng", "warning");
     const created = state.editingOrderCode
       ? await api(`/api/orders/${encodeURIComponent(state.editingOrderCode)}`, { method: "PUT", body: JSON.stringify(payload) })
       : await api("/api/orders", { method: "POST", body: JSON.stringify(payload) });
-    toast(state.editingOrderCode ? "\u0110\u00e3 c\u1eadp nh\u1eadt \u0111\u01a1n h\u00e0ng" : "\u0110\u00e3 ph\u00e1t h\u00e0nh \u0111\u01a1n h\u00e0ng v\u00e0 sinh QR l\u00f4", "success");
+    toast(state.editingOrderCode ? "Đã cập nhật đơn hàng" : "Đã phát hành đơn hàng và sinh QR lô", "success");
+    $("orderModal").classList.add("hidden");
     await loadOrders();
-    await showOrderQrs(created.order_code);
     await loadReports();
   }).catch((err) => toast(err.message, "error")));
 }
@@ -1170,6 +1462,7 @@ async function boot() {
   wireLots();
   wireDeleteModal();
   wireReports();
+  wireExportSheet();
   await Promise.all([loadMachines(), loadWorkers(), loadParts(), loadOrders()]);
   updateLotPreview();
   const params = new URLSearchParams(window.location.search);

@@ -9,12 +9,14 @@ import openpyxl
 
 import database
 from models import (
+    ApiMessage,
     DeleteRequest,
     EntryUpdate,
     MachineCreate,
     MachineUpdate,
     OrderCreate,
     PartCreate,
+    PartStepUpdateInput,
     StepMachineLogInput,
     WorkerCreate,
     WorkerUpdate,
@@ -105,8 +107,9 @@ def api_update_part(part_code: str, payload: PartCreate):
 
 @app.delete("/api/parts/{part_code}")
 def api_delete_part(part_code: str, payload: DeleteRequest):
-    """Xóa mã hàng sau khi xác thực mã xóa."""
-    verify_delete_code(payload)
+    """Xóa mã hàng (phải khớp delete_code)."""
+    if payload.delete_code.upper() != part_code.upper():
+        raise HTTPException(status_code=422, detail="Mã xác nhận không khớp")
     try:
         database.delete_part(part_code.upper())
         return {"message": "Đã xóa mã hàng"}
@@ -114,6 +117,17 @@ def api_delete_part(part_code: str, payload: DeleteRequest):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.put("/api/parts/{part_code}/steps")
+def api_update_part_steps(part_code: str, steps: list[PartStepUpdateInput]):
+    """Cập nhật lại quy trình công đoạn cho một mã hàng."""
+    try:
+        steps_dump = [s.model_dump() for s in steps]
+        database.update_part_steps(part_code.upper(), steps_dump)
+        return {"message": "Đã cập nhật công đoạn thành công"}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/api/orders")

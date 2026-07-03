@@ -56,8 +56,6 @@ class OrderCreate(BaseModel):
     blank_size: str = ""
     order_receive_date: date | None = None
     blank_issue_date: date | None = None
-    delivered_by: str = ""
-    received_by: str = ""
 
     @field_validator("order_code", "part_code")
     @classmethod
@@ -70,8 +68,6 @@ class OrderCreate(BaseModel):
         "drawing_rev",
         "material",
         "blank_size",
-        "delivered_by",
-        "received_by",
     )
     @classmethod
     def clean_optional_text(cls, value: str) -> str:
@@ -161,6 +157,7 @@ class StepMachineLogInput(BaseModel):
     worker_code: str = Field(..., min_length=1, max_length=80)
     work_date: date | None = None
     shift: ShiftName = "KÍP 1"
+    tech_code: str = ""
     qty_ok: int = Field(0, ge=0)
     qty_ng: int = Field(0, ge=0)
     technical_info: str = ""
@@ -187,3 +184,13 @@ class DeleteRequest(BaseModel):
     """Payload xác thực thao tác xóa dữ liệu nhạy cảm."""
 
     delete_code: str = Field(..., min_length=1)
+
+class PartStepUpdateInput(BaseModel):
+    step_name: str = Field(..., min_length=1, max_length=120)
+    step_order: int = Field(..., gt=0)
+    duration_seconds: int = Field(..., gt=0)
+
+    @field_validator("step_name")
+    @classmethod
+    def clean_step_name(cls, value: str) -> str:
+        return value.strip().upper()
