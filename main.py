@@ -12,6 +12,10 @@ from models import (
     ApiMessage,
     DeleteRequest,
     EntryUpdate,
+    LotBaviaSaveInput,
+    LotBaviaWorkSaveInput,
+    LotQcSaveInput,
+    LotWarehouseSaveInput,
     MachineCreate,
     MachineUpdate,
     OrderCreate,
@@ -30,7 +34,7 @@ DELETE_CODE = os.getenv("MES_DELETE_CODE", "admin123")
 
 def verify_delete_code(payload: DeleteRequest) -> None:
     """Chặn thao tác xóa nếu người dùng không có mã xóa nội bộ."""
-    if payload.delete_code != DELETE_CODE:
+    if payload.delete_code.strip() != DELETE_CODE:
         raise HTTPException(status_code=403, detail="Mã xóa không đúng hoặc không có quyền xóa")
 
 app.add_middleware(
@@ -81,6 +85,12 @@ def api_get_parts():
     return database.get_parts()
 
 
+@app.get("/api/parts/summary")
+def api_get_parts_summary(date_from: str | None = Query(None), date_to: str | None = Query(None)):
+    """Báo cáo tổng hợp theo mã hàng, có lọc theo ngày tạo đơn hàng."""
+    return database.get_parts_summary(date_from=date_from, date_to=date_to)
+
+
 @app.post("/api/parts", status_code=201)
 def api_create_part(payload: PartCreate):
     """Tạo mã hàng mới."""
@@ -108,8 +118,7 @@ def api_update_part(part_code: str, payload: PartCreate):
 @app.delete("/api/parts/{part_code}")
 def api_delete_part(part_code: str, payload: DeleteRequest):
     """Xóa mã hàng (phải khớp delete_code)."""
-    if payload.delete_code.upper() != part_code.upper():
-        raise HTTPException(status_code=422, detail="Mã xác nhận không khớp")
+    verify_delete_code(payload)
     try:
         database.delete_part(part_code.upper())
         return {"message": "Đã xóa mã hàng"}
@@ -358,6 +367,86 @@ def api_get_lot(lot_code: str):
     if not lot:
         raise HTTPException(status_code=404, detail="Không tìm thấy lô")
     return lot
+
+
+@app.get("/api/lots/{lot_code}/qc")
+def api_get_lot_qc(lot_code: str):
+    """Lấy form QC của lô, kèm số lượng max theo công đoạn cuối."""
+    qc = database.get_lot_qc(lot_code.upper())
+    if not qc:
+        raise HTTPException(status_code=404, detail="Không tìm thấy lô")
+    return qc
+
+
+@app.put("/api/lots/{lot_code}/qc")
+def api_save_lot_qc(lot_code: str, payload: LotQcSaveInput):
+    """Lưu form QC của lô."""
+    try:
+        return database.save_lot_qc(lot_code.upper(), payload.model_dump())
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/lots/{lot_code}/bavia")
+def api_get_lot_bavia(lot_code: str):
+    """Lấy form Bavia của lô, kèm số lượng max theo công đoạn cuối."""
+    bavia = database.get_lot_bavia(lot_code.upper())
+    if not bavia:
+        raise HTTPException(status_code=404, detail="Không tìm thấy lô")
+    return bavia
+
+
+@app.put("/api/lots/{lot_code}/bavia")
+def api_save_lot_bavia(lot_code: str, payload: LotBaviaSaveInput):
+    """Lưu form Bavia của lô."""
+    try:
+        return database.save_lot_bavia(lot_code.upper(), payload.model_dump())
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/lots/{lot_code}/bavia-work")
+def api_get_lot_bavia_work(lot_code: str):
+    """Lấy form nhập sản lượng Bavia của lô."""
+    work = database.get_lot_bavia_work(lot_code.upper())
+    if not work:
+        raise HTTPException(status_code=404, detail="Không tìm thấy lô")
+    return work
+
+
+@app.put("/api/lots/{lot_code}/bavia-work")
+def api_save_lot_bavia_work(lot_code: str, payload: LotBaviaWorkSaveInput):
+    """Lưu form nhập sản lượng Bavia của lô."""
+    try:
+        return database.save_lot_bavia_work(lot_code.upper(), payload.model_dump())
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/lots/{lot_code}/warehouse")
+def api_get_lot_warehouse(lot_code: str):
+    """Lấy form nhập kho thành phẩm của lô."""
+    warehouse = database.get_lot_warehouse(lot_code.upper())
+    if not warehouse:
+        raise HTTPException(status_code=404, detail="Không tìm thấy lô")
+    return warehouse
+
+
+@app.put("/api/lots/{lot_code}/warehouse")
+def api_save_lot_warehouse(lot_code: str, payload: LotWarehouseSaveInput):
+    """Lưu form nhập kho thành phẩm của lô."""
+    try:
+        return database.save_lot_warehouse(lot_code.upper(), payload.model_dump())
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.post("/api/lots/{lot_code}/init-steps")

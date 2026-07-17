@@ -147,12 +147,103 @@ def init_db() -> None:
               line_index   INTEGER NOT NULL,
               machine_code TEXT NOT NULL REFERENCES machines(machine_code),
               worker_code  TEXT NOT NULL REFERENCES workers(worker_code),
+              work_date    DATE,
+              shift        TEXT DEFAULT '',
               qty_ok       INTEGER DEFAULT 0,
               qty_ng       INTEGER DEFAULT 0,
               technical_info TEXT DEFAULT '',
+              tech_code    TEXT DEFAULT '',
               note         TEXT DEFAULT '',
               created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
               UNIQUE(form_id, line_index)
+            );
+
+            CREATE TABLE IF NOT EXISTS lot_qc_forms (
+              lot_code     TEXT PRIMARY KEY REFERENCES lots(lot_code) ON DELETE CASCADE,
+              max_qty      INTEGER NOT NULL DEFAULT 0,
+              last_step_form_id TEXT DEFAULT '',
+              last_step_name TEXT DEFAULT '',
+              qc_date      TEXT DEFAULT '',
+              created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+              updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS lot_qc_rows (
+              id           INTEGER PRIMARY KEY AUTOINCREMENT,
+              lot_code     TEXT NOT NULL REFERENCES lot_qc_forms(lot_code) ON DELETE CASCADE,
+              line_index   INTEGER NOT NULL,
+              check_name   TEXT DEFAULT '',
+              qty_ok       INTEGER DEFAULT 0,
+              qty_ng       INTEGER DEFAULT 0,
+              defect_content TEXT DEFAULT '',
+              inspector    TEXT DEFAULT '',
+              created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(lot_code, line_index)
+            );
+
+            CREATE TABLE IF NOT EXISTS lot_bavia_forms (
+              lot_code     TEXT PRIMARY KEY REFERENCES lots(lot_code) ON DELETE CASCADE,
+              max_qty      INTEGER NOT NULL DEFAULT 0,
+              last_step_form_id TEXT DEFAULT '',
+              last_step_name TEXT DEFAULT '',
+              bavia_date   TEXT DEFAULT '',
+              created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+              updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS lot_bavia_rows (
+              id           INTEGER PRIMARY KEY AUTOINCREMENT,
+              lot_code     TEXT NOT NULL REFERENCES lot_bavia_forms(lot_code) ON DELETE CASCADE,
+              line_index   INTEGER NOT NULL,
+              check_name   TEXT DEFAULT '',
+              qty_ok       INTEGER DEFAULT 0,
+              qty_ng       INTEGER DEFAULT 0,
+              defect_content TEXT DEFAULT '',
+              inspector    TEXT DEFAULT '',
+              created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(lot_code, line_index)
+            );
+
+            CREATE TABLE IF NOT EXISTS lot_bavia_work_forms (
+              lot_code     TEXT PRIMARY KEY REFERENCES lots(lot_code) ON DELETE CASCADE,
+              max_qty      INTEGER NOT NULL DEFAULT 0,
+              work_date    TEXT DEFAULT '',
+              created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+              updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS lot_bavia_work_rows (
+              id           INTEGER PRIMARY KEY AUTOINCREMENT,
+              lot_code     TEXT NOT NULL REFERENCES lot_bavia_work_forms(lot_code) ON DELETE CASCADE,
+              machine_code TEXT DEFAULT '',
+              worker_code  TEXT DEFAULT '',
+              work_date    TEXT DEFAULT '',
+              shift        TEXT DEFAULT '',
+              qty_ok       INTEGER DEFAULT 0,
+              qty_ng       INTEGER DEFAULT 0,
+              note         TEXT DEFAULT '',
+              created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS lot_warehouse_forms (
+              lot_code     TEXT PRIMARY KEY REFERENCES lots(lot_code) ON DELETE CASCADE,
+              max_qty      INTEGER NOT NULL DEFAULT 0,
+              warehouse_date TEXT DEFAULT '',
+              created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+              updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS lot_warehouse_rows (
+              id           INTEGER PRIMARY KEY AUTOINCREMENT,
+              lot_code     TEXT NOT NULL REFERENCES lot_warehouse_forms(lot_code) ON DELETE CASCADE,
+              line_index   INTEGER NOT NULL,
+              check_name   TEXT DEFAULT '',
+              qty_ok       INTEGER DEFAULT 0,
+              qty_ng       INTEGER DEFAULT 0,
+              defect_content TEXT DEFAULT '',
+              performer    TEXT DEFAULT '',
+              created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(lot_code, line_index)
             );
             """
         )
@@ -169,8 +260,148 @@ def init_db() -> None:
         }
         if "tech_code" not in machine_logs_cols:
             conn.execute("ALTER TABLE step_machine_logs ADD COLUMN tech_code TEXT DEFAULT ''")
+        if "work_date" not in machine_logs_cols:
+            conn.execute("ALTER TABLE step_machine_logs ADD COLUMN work_date DATE")
         if "shift" not in machine_logs_cols:
-            conn.execute("ALTER TABLE step_machine_logs ADD COLUMN shift TEXT DEFAULT 'KÍP 1'")
+            conn.execute("ALTER TABLE step_machine_logs ADD COLUMN shift TEXT DEFAULT ''")
+        if "technical_info" not in machine_logs_cols:
+            conn.execute("ALTER TABLE step_machine_logs ADD COLUMN technical_info TEXT DEFAULT ''")
+        lot_qc_form_cols = {row["name"] for row in conn.execute("PRAGMA table_info(lot_qc_forms)").fetchall()}
+        if not lot_qc_form_cols:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lot_qc_forms (
+                  lot_code     TEXT PRIMARY KEY REFERENCES lots(lot_code) ON DELETE CASCADE,
+                  max_qty      INTEGER NOT NULL DEFAULT 0,
+                  last_step_form_id TEXT DEFAULT '',
+                  last_step_name TEXT DEFAULT '',
+                  qc_date      TEXT DEFAULT '',
+                  created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                  updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        if "qc_date" not in lot_qc_form_cols:
+            conn.execute("ALTER TABLE lot_qc_forms ADD COLUMN qc_date TEXT DEFAULT ''")
+        lot_qc_row_cols = {row["name"] for row in conn.execute("PRAGMA table_info(lot_qc_rows)").fetchall()}
+        if not lot_qc_row_cols:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lot_qc_rows (
+                  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                  lot_code     TEXT NOT NULL REFERENCES lot_qc_forms(lot_code) ON DELETE CASCADE,
+                  line_index   INTEGER NOT NULL,
+                  check_name   TEXT DEFAULT '',
+                  qty_ok       INTEGER DEFAULT 0,
+                  qty_ng       INTEGER DEFAULT 0,
+                  defect_content TEXT DEFAULT '',
+                  inspector    TEXT DEFAULT '',
+                  created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE(lot_code, line_index)
+                )
+                """
+            )
+        bavia_form_cols = {row["name"] for row in conn.execute("PRAGMA table_info(lot_bavia_forms)").fetchall()}
+        if not bavia_form_cols:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lot_bavia_forms (
+                  lot_code     TEXT PRIMARY KEY REFERENCES lots(lot_code) ON DELETE CASCADE,
+                  max_qty      INTEGER NOT NULL DEFAULT 0,
+                  last_step_form_id TEXT DEFAULT '',
+                  last_step_name TEXT DEFAULT '',
+                  bavia_date   TEXT DEFAULT '',
+                  created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                  updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        if "bavia_date" not in bavia_form_cols:
+            conn.execute("ALTER TABLE lot_bavia_forms ADD COLUMN bavia_date TEXT DEFAULT ''")
+        bavia_row_cols = {row["name"] for row in conn.execute("PRAGMA table_info(lot_bavia_rows)").fetchall()}
+        if not bavia_row_cols:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lot_bavia_rows (
+                  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                  lot_code     TEXT NOT NULL REFERENCES lot_bavia_forms(lot_code) ON DELETE CASCADE,
+                  line_index   INTEGER NOT NULL,
+                  check_name   TEXT DEFAULT '',
+                  qty_ok       INTEGER DEFAULT 0,
+                  qty_ng       INTEGER DEFAULT 0,
+                  defect_content TEXT DEFAULT '',
+                  inspector    TEXT DEFAULT '',
+                  created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE(lot_code, line_index)
+                )
+                """
+            )
+        bavia_work_form_cols = {row["name"] for row in conn.execute("PRAGMA table_info(lot_bavia_work_forms)").fetchall()}
+        if not bavia_work_form_cols:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lot_bavia_work_forms (
+                  lot_code     TEXT PRIMARY KEY REFERENCES lots(lot_code) ON DELETE CASCADE,
+                  max_qty      INTEGER NOT NULL DEFAULT 0,
+                  work_date    TEXT DEFAULT '',
+                  created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                  updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        if "work_date" not in bavia_work_form_cols:
+            conn.execute("ALTER TABLE lot_bavia_work_forms ADD COLUMN work_date TEXT DEFAULT ''")
+        bavia_work_row_cols = {row["name"] for row in conn.execute("PRAGMA table_info(lot_bavia_work_rows)").fetchall()}
+        if not bavia_work_row_cols:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lot_bavia_work_rows (
+                  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                  lot_code     TEXT NOT NULL REFERENCES lot_bavia_work_forms(lot_code) ON DELETE CASCADE,
+                  machine_code TEXT DEFAULT '',
+                  worker_code  TEXT DEFAULT '',
+                  work_date    TEXT DEFAULT '',
+                  shift        TEXT DEFAULT '',
+                  qty_ok       INTEGER DEFAULT 0,
+                  qty_ng       INTEGER DEFAULT 0,
+                  note         TEXT DEFAULT '',
+                  created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        warehouse_form_cols = {row["name"] for row in conn.execute("PRAGMA table_info(lot_warehouse_forms)").fetchall()}
+        if not warehouse_form_cols:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lot_warehouse_forms (
+                  lot_code     TEXT PRIMARY KEY REFERENCES lots(lot_code) ON DELETE CASCADE,
+                  max_qty      INTEGER NOT NULL DEFAULT 0,
+                  warehouse_date TEXT DEFAULT '',
+                  created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                  updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        if "warehouse_date" not in warehouse_form_cols:
+            conn.execute("ALTER TABLE lot_warehouse_forms ADD COLUMN warehouse_date TEXT DEFAULT ''")
+        warehouse_row_cols = {row["name"] for row in conn.execute("PRAGMA table_info(lot_warehouse_rows)").fetchall()}
+        if not warehouse_row_cols:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lot_warehouse_rows (
+                  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                  lot_code     TEXT NOT NULL REFERENCES lot_warehouse_forms(lot_code) ON DELETE CASCADE,
+                  line_index   INTEGER NOT NULL,
+                  check_name   TEXT DEFAULT '',
+                  qty_ok       INTEGER DEFAULT 0,
+                  qty_ng       INTEGER DEFAULT 0,
+                  defect_content TEXT DEFAULT '',
+                  performer    TEXT DEFAULT '',
+                  created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE(lot_code, line_index)
+                )
+                """
+            )
         order_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(orders)").fetchall()
@@ -301,6 +532,83 @@ def get_parts() -> list[dict[str, Any]]:
                 (part["id"],),
             ).fetchall()
         return parts
+
+
+def get_parts_summary(date_from: str | None = None, date_to: str | None = None) -> list[dict[str, Any]]:
+    """Thống kê theo mã hàng: số đơn, tổng SL, đơn hoàn thành, OK, NG, có lọc ngày tạo đơn."""
+    with connect() as conn:
+        parts = conn.execute("SELECT id, part_code, created_at FROM parts ORDER BY created_at DESC, id DESC").fetchall()
+        result = []
+        for part in parts:
+            # Build date filter clause
+            date_cond = ""
+            params: list[Any] = [part["part_code"]]
+            if date_from:
+                date_cond += " AND o.created_at >= ?"
+                params.append(date_from)
+            if date_to:
+                date_cond += " AND o.created_at <= ?"
+                params.append(date_to + " 23:59:59")
+
+            orders_row = conn.execute(
+                f"""
+                SELECT COUNT(DISTINCT o.order_code) AS order_count,
+                       COALESCE(SUM(o.total_qty), 0) AS total_qty
+                FROM orders o
+                WHERE o.part_code = ?{date_cond}
+                """,
+                params,
+            ).fetchone()
+
+            stats_row = conn.execute(
+                f"""
+                SELECT COALESCE(SUM(se.qty_ok), 0) AS total_ok,
+                       COALESCE(SUM(se.qty_ng), 0) AS total_ng
+                FROM step_entries se
+                JOIN lots l ON l.lot_code = se.lot_code
+                JOIN orders o ON o.order_code = l.order_code
+                WHERE o.part_code = ?{date_cond}
+                """,
+                params,
+            ).fetchone()
+
+            completed_row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS completed_orders
+                FROM orders o
+                WHERE o.part_code = ?{date_cond}
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM lots l
+                    WHERE l.order_code = o.order_code
+                      AND (
+                        NOT EXISTS (
+                          SELECT 1
+                          FROM step_entries se
+                          WHERE se.lot_code = l.lot_code
+                        )
+                        OR EXISTS (
+                          SELECT 1
+                          FROM step_entries se
+                          WHERE se.lot_code = l.lot_code
+                            AND se.status != 'done'
+                        )
+                      )
+                  )
+                """,
+                params,
+            ).fetchone()
+
+            result.append({
+                "part_code": part["part_code"],
+                "created_at": part["created_at"],
+                "order_count": orders_row["order_count"] or 0,
+                "total_qty": orders_row["total_qty"] or 0,
+                "completed_orders": completed_row["completed_orders"] or 0,
+                "total_ok": stats_row["total_ok"] or 0,
+                "total_ng": stats_row["total_ng"] or 0,
+            })
+        return result
 
 
 def get_part(part_code: str) -> dict[str, Any] | None:
@@ -639,6 +947,458 @@ def init_lot_steps(lot_code: str) -> dict[str, Any]:
     return get_lot(lot_code) or lot
 
 
+DEFAULT_QC_ITEMS = [
+	"Đo 100% kích thước theo tiêu chuẩn",
+	"Soi ngoại quan 100%",
+	"Kiểm tra đúng mã sản phẩm, chất liệu",
+	"QC trong kiểm tra xác suất",
+]
+
+DEFAULT_BAVIA_ITEMS = DEFAULT_QC_ITEMS[:3]
+
+DEFAULT_WAREHOUSE_ITEMS = [
+    "Số lượng nhận từ QC",
+    "Kiểm tra đúng mã sản phẩm, chất liệu",
+    "Đóng gói",
+]
+
+
+def get_lot_last_output(conn: sqlite3.Connection, lot_code: str) -> dict[str, Any]:
+    """Lấy output của công đoạn cuối cùng trong lô để làm giới hạn QC."""
+    row = conn.execute(
+        """
+        SELECT se.form_id, se.step_name,
+               COALESCE(se.qty_ok, 0) AS qty_ok,
+               COALESCE(se.qty_ng, 0) AS qty_ng,
+               COALESCE(se.qty_ok, 0) + COALESCE(se.qty_ng, 0) AS max_qty
+        FROM step_entries se
+        WHERE se.lot_code = ?
+        ORDER BY se.id DESC
+        LIMIT 1
+        """,
+        (lot_code,),
+    ).fetchone()
+    if not row:
+        return {"form_id": "", "step_name": "", "qty_ok": 0, "qty_ng": 0, "max_qty": 0}
+    return dict(row)
+
+
+def get_lot_bavia_work_limit(conn: sqlite3.Connection, lot_code: str) -> int:
+    """Lấy số lượng tối đa của Bavia từ tổng OK+NG đã nhập ở form Bavia work."""
+    row = conn.execute(
+        """
+        SELECT COALESCE(qty_ok, 0) AS qty_ok,
+               COALESCE(qty_ng, 0) AS qty_ng
+        FROM lot_bavia_work_rows
+        WHERE lot_code = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (lot_code,),
+    ).fetchone()
+    if row:
+        return int(row["qty_ok"] or 0) + int(row["qty_ng"] or 0)
+    form_row = conn.execute(
+        "SELECT max_qty FROM lot_bavia_work_forms WHERE lot_code = ?",
+        (lot_code,),
+    ).fetchone()
+    return int(form_row["max_qty"] or 0) if form_row else 0
+
+
+def _get_quality_form(
+    lot_code: str,
+    *,
+    form_table: str,
+    row_table: str,
+    date_column: str,
+    date_key: str,
+    default_items: list[str],
+    row_limit: int,
+    use_bavia_work_limit: bool = False,
+) -> dict[str, Any] | None:
+    """L?y form ch?t l??ng theo l? cho QC/Bavia."""
+    with connect() as conn:
+        lot = conn.execute("SELECT * FROM lots WHERE lot_code = ?", (lot_code,)).fetchone()
+        if not lot:
+            return None
+        last_output = get_lot_last_output(conn, lot_code)
+        max_qty = get_lot_bavia_work_limit(conn, lot_code) if use_bavia_work_limit else int(last_output["max_qty"] or 0)
+        rows = conn.execute(
+            f"""
+            SELECT line_index, check_name, qty_ok, qty_ng, defect_content, inspector
+            FROM {row_table}
+            WHERE lot_code = ?
+              AND line_index BETWEEN 1 AND ?
+              AND UPPER(COALESCE(check_name, '')) != 'T?NG'
+            ORDER BY line_index
+            """,
+            (lot_code, row_limit),
+        ).fetchall()
+        if not rows:
+            rows = [
+                {
+                    "line_index": index,
+                    "check_name": item,
+                    "qty_ok": 0,
+                    "qty_ng": 0,
+                    "defect_content": "",
+                    "inspector": "",
+                }
+                for index, item in enumerate(default_items, start=1)
+            ]
+        form_row = conn.execute(
+            f"SELECT {date_column} FROM {form_table} WHERE lot_code = ?",
+            (lot_code,),
+        ).fetchone()
+        return {
+            "lot": lot,
+            "order": conn.execute("SELECT * FROM orders WHERE order_code = ?", (lot["order_code"],)).fetchone(),
+            "max_qty": max_qty,
+            "last_step_form_id": last_output["form_id"],
+            "last_step_name": last_output["step_name"],
+            "last_step_ok": int(last_output["qty_ok"] or 0),
+            "last_step_ng": int(last_output["qty_ng"] or 0),
+            date_key: (form_row[date_column] if form_row else "") or "",
+            "rows": rows,
+        }
+
+
+def _save_quality_form(
+    lot_code: str,
+    payload: dict[str, Any],
+    *,
+    form_table: str,
+    row_table: str,
+    date_column: str,
+    date_key: str,
+    default_items: list[str],
+    row_limit: int,
+    use_bavia_work_limit: bool = False,
+) -> dict[str, Any]:
+    """L?u form ch?t l??ng theo l? cho QC/Bavia."""
+    with connect() as conn:
+        lot = conn.execute("SELECT * FROM lots WHERE lot_code = ?", (lot_code,)).fetchone()
+        if not lot:
+            raise LookupError("Kh?ng t?m th?y l?")
+        last_output = get_lot_last_output(conn, lot_code)
+        max_qty = get_lot_bavia_work_limit(conn, lot_code) if use_bavia_work_limit else int(last_output["max_qty"] or 0)
+        form_date = str(payload.get(date_key) or "").strip()
+        rows = list(payload.get("rows") or [])[:row_limit]
+        cleaned_rows: list[dict[str, Any]] = []
+        previous_total = max_qty
+        blank_seen = False
+        for index, row in enumerate(rows, start=1):
+            qty_ok = int(row.get("qty_ok") or 0)
+            qty_ng = int(row.get("qty_ng") or 0)
+            defect_content = str(row.get("defect_content") or "").strip()
+            inspector = str(row.get("inspector") or "").strip()
+            raw_check_name = str(row.get("check_name") or "").strip().upper()
+            if raw_check_name == "T?NG":
+                continue
+            has_data = (qty_ok + qty_ng) > 0
+            if blank_seen and has_data:
+                raise ValueError("C?ng ?o?n ph?i nh?p tu?n t?, kh?ng ???c b? tr?ng c?ng ?o?n tr??c")
+            if not has_data:
+                blank_seen = True
+                continue
+            if index > 1 and previous_total <= 0:
+                raise ValueError("C?ng ?o?n tr??c ch?a c? d? li?u, ch?a th? nh?p c?ng ?o?n sau")
+            row_limit_qty = max_qty if index == 1 else previous_total
+            if row_limit_qty and qty_ok + qty_ng > row_limit_qty:
+                raise ValueError(f"T?ng OK + NG c?a c?ng ?o?n kh?ng ???c v??t qu? s? l??ng t?i ?a {row_limit_qty}")
+            if not inspector:
+                raise ValueError("Vui lòng chọn người kiểm tra cho tất cả các dòng có dữ liệu")
+            cleaned_rows.append({
+                "line_index": index,
+                "check_name": default_items[index - 1] if index - 1 < len(default_items) else f"QC {index}",
+                "qty_ok": qty_ok,
+                "qty_ng": qty_ng,
+                "defect_content": defect_content,
+                "inspector": inspector,
+            })
+            previous_total = qty_ok + qty_ng
+        conn.execute(
+            f"""
+            INSERT INTO {form_table}(lot_code, max_qty, last_step_form_id, last_step_name, {date_column}, updated_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(lot_code) DO UPDATE SET
+              max_qty = excluded.max_qty,
+              last_step_form_id = excluded.last_step_form_id,
+              last_step_name = excluded.last_step_name,
+              {date_column} = excluded.{date_column},
+              updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                lot_code,
+                max_qty,
+                last_output["form_id"],
+                last_output["step_name"],
+                form_date,
+            ),
+        )
+        conn.execute(f"DELETE FROM {row_table} WHERE lot_code = ?", (lot_code,))
+        for row in cleaned_rows:
+            conn.execute(
+                f"""
+                INSERT INTO {row_table}(lot_code, line_index, check_name, qty_ok, qty_ng, defect_content, inspector)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    lot_code,
+                    row["line_index"],
+                    row["check_name"],
+                    row["qty_ok"],
+                    row["qty_ng"],
+                    row["defect_content"],
+                    row["inspector"],
+                ),
+            )
+    return _get_quality_form(
+        lot_code,
+        form_table=form_table,
+        row_table=row_table,
+        date_column=date_column,
+        date_key=date_key,
+        default_items=default_items,
+        row_limit=row_limit,
+    ) or {"lot_code": lot_code, "max_qty": max_qty, "rows": cleaned_rows}
+
+
+def get_lot_qc(lot_code: str) -> dict[str, Any] | None:
+    """L?y form QC c?a l?, n?u ch?a c? d? li?u th? tr? v? m?u r?ng."""
+    return _get_quality_form(
+        lot_code,
+        form_table="lot_qc_forms",
+        row_table="lot_qc_rows",
+        date_column="qc_date",
+        date_key="qc_date",
+        default_items=DEFAULT_QC_ITEMS,
+        row_limit=4,
+    )
+
+
+def save_lot_qc(lot_code: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """L?u to?n b? form QC theo l?."""
+    return _save_quality_form(
+        lot_code,
+        payload,
+        form_table="lot_qc_forms",
+        row_table="lot_qc_rows",
+        date_column="qc_date",
+        date_key="qc_date",
+        default_items=DEFAULT_QC_ITEMS,
+        row_limit=4,
+    )
+
+
+def get_lot_bavia(lot_code: str) -> dict[str, Any] | None:
+    """L?y form Bavia c?a l?, n?u ch?a c? d? li?u th? tr? v? m?u r?ng."""
+    return _get_quality_form(
+        lot_code,
+        form_table="lot_bavia_forms",
+        row_table="lot_bavia_rows",
+        date_column="bavia_date",
+        date_key="bavia_date",
+        default_items=DEFAULT_BAVIA_ITEMS,
+        row_limit=3,
+        use_bavia_work_limit=True,
+    )
+
+
+def save_lot_bavia(lot_code: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """L?u to?n b? form Bavia theo l?."""
+    return _save_quality_form(
+        lot_code,
+        payload,
+        form_table="lot_bavia_forms",
+        row_table="lot_bavia_rows",
+        date_column="bavia_date",
+        date_key="bavia_date",
+        default_items=DEFAULT_BAVIA_ITEMS,
+        row_limit=3,
+        use_bavia_work_limit=True,
+    )
+
+
+def get_lot_bavia_work(lot_code: str) -> dict[str, Any] | None:
+    """Lấy form nhập sản lượng Bavia theo lô."""
+    with connect() as conn:
+        lot = conn.execute("SELECT * FROM lots WHERE lot_code = ?", (lot_code,)).fetchone()
+        if not lot:
+            return None
+        last_output = get_lot_last_output(conn, lot_code)
+        form_row = conn.execute(
+            "SELECT work_date FROM lot_bavia_work_forms WHERE lot_code = ?",
+            (lot_code,),
+        ).fetchone()
+        row = conn.execute(
+            """
+            SELECT *
+            FROM lot_bavia_work_rows
+            WHERE lot_code = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (lot_code,),
+        ).fetchone()
+        if not row:
+            row = {
+                "machine_code": "",
+                "worker_code": "",
+                "work_date": "",
+                "shift": "",
+                "qty_ok": 0,
+                "qty_ng": 0,
+                "note": "",
+            }
+        return {
+            "lot": lot,
+            "order": conn.execute("SELECT * FROM orders WHERE order_code = ?", (lot["order_code"],)).fetchone(),
+            "max_qty": int(last_output["max_qty"] or 0),
+            "last_step_form_id": last_output["form_id"],
+            "last_step_name": last_output["step_name"],
+            "last_step_ok": int(last_output["qty_ok"] or 0),
+            "last_step_ng": int(last_output["qty_ng"] or 0),
+            "work_date": (form_row["work_date"] if form_row else "") or "",
+            "row": row,
+        }
+
+
+def save_lot_bavia_work(lot_code: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Lưu form nhập sản lượng Bavia theo lô."""
+    with connect() as conn:
+        lot = conn.execute("SELECT * FROM lots WHERE lot_code = ?", (lot_code,)).fetchone()
+        if not lot:
+            raise LookupError("Không tìm thấy lô")
+        last_output = get_lot_last_output(conn, lot_code)
+        max_qty = int(last_output["max_qty"] or 0)
+        work_date = str(payload.get("work_date") or "").strip()
+        row = dict(payload.get("row") or {})
+        qty_ok = int(row.get("qty_ok") or 0)
+        qty_ng = int(row.get("qty_ng") or 0)
+        total = qty_ok + qty_ng
+        if max_qty and total > max_qty:
+            raise ValueError(f"Tổng OK + NG không được vượt quá số lượng tối đa {max_qty}")
+        conn.execute(
+            """
+            INSERT INTO lot_bavia_work_forms(lot_code, max_qty, work_date, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(lot_code) DO UPDATE SET
+              max_qty = excluded.max_qty,
+              work_date = excluded.work_date,
+              updated_at = CURRENT_TIMESTAMP
+            """,
+            (lot_code, max_qty, work_date),
+        )
+        conn.execute("DELETE FROM lot_bavia_work_rows WHERE lot_code = ?", (lot_code,))
+        conn.execute(
+            """
+            INSERT INTO lot_bavia_work_rows(lot_code, machine_code, worker_code, work_date, shift, qty_ok, qty_ng, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                lot_code,
+                str(row.get("machine_code") or "").strip(),
+                str(row.get("worker_code") or "").strip(),
+                str(row.get("work_date") or work_date or "").strip(),
+                str(row.get("shift") or "").strip(),
+                qty_ok,
+                qty_ng,
+                str(row.get("note") or "").strip(),
+            ),
+        )
+    return get_lot_bavia_work(lot_code) or {"lot_code": lot_code, "max_qty": max_qty, "row": row}
+
+
+def get_lot_bavia_work(lot_code: str) -> dict[str, Any] | None:
+    """Lấy form nhập sản lượng Bavia theo lô, với max lấy từ tổng OK+NG của Bavia work."""
+    with connect() as conn:
+        lot = conn.execute("SELECT * FROM lots WHERE lot_code = ?", (lot_code,)).fetchone()
+        if not lot:
+            return None
+        last_output = get_lot_last_output(conn, lot_code)
+        form_row = conn.execute(
+            "SELECT work_date FROM lot_bavia_work_forms WHERE lot_code = ?",
+            (lot_code,),
+        ).fetchone()
+        row = conn.execute(
+            """
+            SELECT *
+            FROM lot_bavia_work_rows
+            WHERE lot_code = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (lot_code,),
+        ).fetchone()
+        if not row:
+            row = {
+                "machine_code": "",
+                "worker_code": "",
+                "work_date": "",
+                "shift": "",
+                "qty_ok": 0,
+                "qty_ng": 0,
+                "note": "",
+            }
+        return {
+            "lot": lot,
+            "order": conn.execute("SELECT * FROM orders WHERE order_code = ?", (lot["order_code"],)).fetchone(),
+            "max_qty": get_lot_bavia_work_limit(conn, lot_code),
+            "last_step_form_id": last_output["form_id"],
+            "last_step_name": last_output["step_name"],
+            "last_step_ok": int(last_output["qty_ok"] or 0),
+            "last_step_ng": int(last_output["qty_ng"] or 0),
+            "work_date": (form_row["work_date"] if form_row else "") or "",
+            "row": row,
+        }
+
+
+def save_lot_bavia_work(lot_code: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Lưu form nhập sản lượng Bavia theo lô, đồng thời lưu max_qty = OK + NG."""
+    with connect() as conn:
+        lot = conn.execute("SELECT * FROM lots WHERE lot_code = ?", (lot_code,)).fetchone()
+        if not lot:
+            raise LookupError("Không tìm thấy lô")
+        work_date = str(payload.get("work_date") or "").strip()
+        row = dict(payload.get("row") or {})
+        qty_ok = int(row.get("qty_ok") or 0)
+        qty_ng = int(row.get("qty_ng") or 0)
+        total = qty_ok + qty_ng
+        max_qty = int(lot["qty_per_lot"] or 0)
+        if max_qty and total > max_qty:
+            raise ValueError(f"Tổng OK + NG không được vượt quá số lượng tối đa {max_qty}")
+        conn.execute(
+            """
+            INSERT INTO lot_bavia_work_forms(lot_code, max_qty, work_date, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(lot_code) DO UPDATE SET
+              max_qty = excluded.max_qty,
+              work_date = excluded.work_date,
+              updated_at = CURRENT_TIMESTAMP
+            """,
+            (lot_code, total, work_date),
+        )
+        conn.execute("DELETE FROM lot_bavia_work_rows WHERE lot_code = ?", (lot_code,))
+        conn.execute(
+            """
+            INSERT INTO lot_bavia_work_rows(lot_code, machine_code, worker_code, work_date, shift, qty_ok, qty_ng, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                lot_code,
+                str(row.get("machine_code") or "").strip(),
+                str(row.get("worker_code") or "").strip(),
+                str(row.get("work_date") or work_date or "").strip(),
+                str(row.get("shift") or "").strip(),
+                qty_ok,
+                qty_ng,
+                str(row.get("note") or "").strip(),
+            ),
+        )
+    return get_lot_bavia_work(lot_code) or {"lot_code": lot_code, "max_qty": total, "row": row}
+
+
 def get_entry(form_id: str) -> dict[str, Any] | None:
     """Lấy một biểu mẫu công đoạn theo form_id."""
     with connect() as conn:
@@ -656,10 +1416,14 @@ def get_machine_logs(form_id: str) -> list[dict[str, Any]]:
     with connect() as conn:
         return conn.execute(
             """
-            SELECT sml.*, m.machine_name, w.worker_name
+            SELECT sml.*,
+                   m.machine_name,
+                   w.worker_name,
+                   tw.worker_name AS tech_name
             FROM step_machine_logs sml
             LEFT JOIN machines m ON m.machine_code = sml.machine_code
             LEFT JOIN workers w ON w.worker_code = sml.worker_code
+            LEFT JOIN workers tw ON tw.worker_code = sml.tech_code
             WHERE sml.form_id = ?
             ORDER BY sml.line_index
             """,
@@ -704,7 +1468,7 @@ def recalc_entry_from_machine_logs(conn: sqlite3.Connection, form_id: str) -> di
     return updated
 
 
-def validate_machine_log_refs(conn: sqlite3.Connection, machine_code: str, worker_code: str) -> None:
+def validate_machine_log_refs(conn: sqlite3.Connection, machine_code: str, worker_code: str, tech_code: str = "") -> None:
     """Đảm bảo máy và nhân công active trước khi ghi log."""
     machine = conn.execute(
         "SELECT * FROM machines WHERE machine_code = ? AND is_active = 1",
@@ -718,6 +1482,14 @@ def validate_machine_log_refs(conn: sqlite3.Connection, machine_code: str, worke
     ).fetchone()
     if not worker:
         raise LookupError("Không tìm thấy nhân công đang hoạt động")
+    tech_code = (tech_code or "").strip().upper()
+    if tech_code:
+        tech = conn.execute(
+            "SELECT * FROM workers WHERE worker_code = ? AND is_active = 1",
+            (tech_code,),
+        ).fetchone()
+        if not tech:
+            raise LookupError("Không tìm thấy kỹ thuật đang hoạt động")
 
 
 def create_machine_log(form_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -725,31 +1497,28 @@ def create_machine_log(form_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     with connect() as conn:
         if not conn.execute("SELECT 1 FROM step_entries WHERE form_id = ?", (form_id,)).fetchone():
             raise LookupError("Không tìm thấy biểu mẫu")
-        validate_machine_log_refs(conn, payload["machine_code"], payload["worker_code"])
-        conn.execute(
-            "UPDATE step_entries SET work_date = ?, shift = ? WHERE form_id = ?",
-            (payload.get("work_date"), payload.get("shift") or "KÍP 1", form_id),
-        )
+        validate_machine_log_refs(conn, payload["machine_code"], payload["worker_code"], payload.get("tech_code") or "")
         next_index = conn.execute(
             "SELECT COALESCE(MAX(line_index), 0) + 1 AS next_index FROM step_machine_logs WHERE form_id = ?",
             (form_id,),
         ).fetchone()["next_index"]
         conn.execute(
             """
-            INSERT INTO step_machine_logs(form_id, line_index, machine_code, worker_code, qty_ok, qty_ng, technical_info, note, tech_code, shift)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO step_machine_logs(form_id, line_index, machine_code, worker_code, work_date, shift, qty_ok, qty_ng, technical_info, note, tech_code)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 form_id,
                 next_index,
                 payload["machine_code"],
                 payload["worker_code"],
+                payload.get("work_date"),
+                payload.get("shift") or "",
                 int(payload.get("qty_ok") or 0),
                 int(payload.get("qty_ng") or 0),
                 payload.get("technical_info") or "",
                 payload.get("note") or "",
                 payload.get("tech_code") or "",
-                payload.get("shift") or "KÍP 1",
             ),
         )
         recalc_entry_from_machine_logs(conn, form_id)
@@ -759,24 +1528,23 @@ def create_machine_log(form_id: str, payload: dict[str, Any]) -> dict[str, Any]:
 def update_machine_log(form_id: str, line_index: int, payload: dict[str, Any]) -> dict[str, Any]:
     """Cập nhật một dòng máy và cập nhật lại status form."""
     with connect() as conn:
-        validate_machine_log_refs(conn, payload["machine_code"], payload["worker_code"])
-        conn.execute(
-            "UPDATE step_entries SET work_date = ?, shift = ? WHERE form_id = ?",
-            (payload.get("work_date"), payload.get("shift") or "KÍP 1", form_id),
-        )
+        validate_machine_log_refs(conn, payload["machine_code"], payload["worker_code"], payload.get("tech_code") or "")
         cur = conn.execute(
             """
             UPDATE step_machine_logs
-            SET machine_code = ?, worker_code = ?, qty_ok = ?, qty_ng = ?, technical_info = ?, note = ?, tech_code = ?, shift = ?
+            SET machine_code = ?, worker_code = ?, work_date = ?, shift = ?, qty_ok = ?, qty_ng = ?, technical_info = ?, note = ?, tech_code = ?
             WHERE form_id = ? AND line_index = ?
             """,
             (
                 payload["machine_code"],
                 payload["worker_code"],
+                payload.get("work_date"),
+                payload.get("shift") or "",
                 int(payload.get("qty_ok") or 0),
                 int(payload.get("qty_ng") or 0),
                 payload.get("technical_info") or "",
                 payload.get("note") or "",
+                payload.get("tech_code") or "",
                 form_id,
                 line_index,
             ),
@@ -886,7 +1654,20 @@ def get_order_report(order_code: str) -> list[dict[str, Any]]:
             """
             SELECT l.lot_code, l.qty_per_lot, l.lot_index, se.step_name, se.form_id,
                    se.status, se.qty_ok, se.qty_ng, se.worker_name, se.tech_name,
-                   se.work_date, se.shift,
+                   COALESCE((
+                     SELECT sml.work_date
+                     FROM step_machine_logs sml
+                     WHERE sml.form_id = se.form_id AND COALESCE(sml.work_date, '') != ''
+                     ORDER BY sml.line_index
+                     LIMIT 1
+                   ), se.work_date, '') AS work_date,
+                   COALESCE((
+                     SELECT sml.shift
+                     FROM step_machine_logs sml
+                     WHERE sml.form_id = se.form_id AND COALESCE(sml.shift, '') != ''
+                     ORDER BY sml.line_index
+                     LIMIT 1
+                   ), se.shift, '') AS shift,
                    COALESCE((
                      SELECT GROUP_CONCAT(machine_text, ', ')
                      FROM (
@@ -904,3 +1685,123 @@ def get_order_report(order_code: str) -> list[dict[str, Any]]:
             """,
             (order_code,),
         ).fetchall()
+
+
+def get_lot_warehouse(lot_code: str) -> dict[str, Any] | None:
+    """Lấy form nhập kho thành phẩm theo lô."""
+    with connect() as conn:
+        lot = conn.execute("SELECT * FROM lots WHERE lot_code = ?", (lot_code,)).fetchone()
+        if not lot:
+            return None
+        last_output = get_lot_last_output(conn, lot_code)
+        source_max = int(last_output["qty_ok"] or 0)
+        form_row = conn.execute(
+            "SELECT warehouse_date FROM lot_warehouse_forms WHERE lot_code = ?",
+            (lot_code,),
+        ).fetchone()
+        rows = conn.execute(
+            """
+            SELECT line_index, check_name, qty_ok, qty_ng, defect_content, performer
+            FROM lot_warehouse_rows
+            WHERE lot_code = ?
+            ORDER BY line_index
+            """,
+            (lot_code,),
+        ).fetchall()
+        if not rows:
+            rows = [
+                {
+                    "line_index": index,
+                    "check_name": item,
+                    "qty_ok": 0,
+                    "qty_ng": 0,
+                    "defect_content": "",
+                    "performer": "",
+                }
+                for index, item in enumerate(DEFAULT_WAREHOUSE_ITEMS, start=1)
+            ]
+        return {
+            "lot": lot,
+            "order": conn.execute("SELECT * FROM orders WHERE order_code = ?", (lot["order_code"],)).fetchone(),
+            "max_qty": source_max,
+            "last_step_form_id": last_output["form_id"],
+            "last_step_name": last_output["step_name"],
+            "last_step_ok": int(last_output["qty_ok"] or 0),
+            "last_step_ng": int(last_output["qty_ng"] or 0),
+            "warehouse_date": (form_row["warehouse_date"] if form_row else "") or "",
+            "rows": rows,
+        }
+
+
+def save_lot_warehouse(lot_code: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Lưu form nhập kho thành phẩm theo lô."""
+    with connect() as conn:
+        lot = conn.execute("SELECT * FROM lots WHERE lot_code = ?", (lot_code,)).fetchone()
+        if not lot:
+            raise LookupError("Không tìm thấy lô")
+        last_output = get_lot_last_output(conn, lot_code)
+        source_max = int(last_output["qty_ok"] or 0)
+        form_date = str(payload.get("warehouse_date") or "").strip()
+        rows = list(payload.get("rows") or [])[:3]
+        cleaned_rows: list[dict[str, Any]] = []
+        previous_total = source_max
+        blank_seen = False
+        for index, row in enumerate(rows, start=1):
+            qty_ok = int(row.get("qty_ok") or 0)
+            qty_ng = int(row.get("qty_ng") or 0)
+            defect_content = str(row.get("defect_content") or "").strip()
+            performer = str(row.get("performer") or "").strip()
+            if index in (1, 3):
+                qty_ng = 0
+                defect_content = ""
+            has_data = (qty_ok + qty_ng) > 0
+            if blank_seen and has_data:
+                raise ValueError("Công đoạn phải nhập tuần tự, không được bỏ trống công đoạn trước")
+            if not has_data:
+                blank_seen = True
+                continue
+            if index > 1 and previous_total <= 0:
+                raise ValueError("Công đoạn trước chưa có dữ liệu, chưa thể nhập công đoạn sau")
+            row_limit_qty = source_max if index == 1 else previous_total
+            if row_limit_qty and qty_ok + qty_ng > row_limit_qty:
+                raise ValueError(f"Tổng OK + NG của công đoạn không được vượt quá số lượng tối đa {row_limit_qty}")
+            if not performer:
+                raise ValueError("Vui lòng chọn người thực hiện cho tất cả các dòng có dữ liệu")
+            cleaned_rows.append({
+                "line_index": index,
+                "check_name": DEFAULT_WAREHOUSE_ITEMS[index - 1] if index - 1 < len(DEFAULT_WAREHOUSE_ITEMS) else f"KHO {index}",
+                "qty_ok": qty_ok,
+                "qty_ng": qty_ng,
+                "defect_content": defect_content,
+                "performer": performer,
+            })
+            previous_total = qty_ok + qty_ng
+        conn.execute(
+            """
+            INSERT INTO lot_warehouse_forms(lot_code, max_qty, warehouse_date, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(lot_code) DO UPDATE SET
+              max_qty = excluded.max_qty,
+              warehouse_date = excluded.warehouse_date,
+              updated_at = CURRENT_TIMESTAMP
+            """,
+            (lot_code, source_max, form_date),
+        )
+        conn.execute("DELETE FROM lot_warehouse_rows WHERE lot_code = ?", (lot_code,))
+        for row in cleaned_rows:
+            conn.execute(
+                """
+                INSERT INTO lot_warehouse_rows(lot_code, line_index, check_name, qty_ok, qty_ng, defect_content, performer)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    lot_code,
+                    row["line_index"],
+                    row["check_name"],
+                    row["qty_ok"],
+                    row["qty_ng"],
+                    row["defect_content"],
+                    row["performer"],
+                ),
+            )
+    return get_lot_warehouse(lot_code) or {"lot_code": lot_code, "max_qty": source_max, "rows": cleaned_rows}

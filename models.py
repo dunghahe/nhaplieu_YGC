@@ -4,7 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
-ShiftName = Literal["KÍP 1", "KÍP 2", "KÍP 3", "TĂNG CA"]
+ShiftName = Literal["", "KÍP 1", "KÍP 2", "KÍP 3", "TĂNG CA"]
 
 
 class PartStepInput(BaseModel):
@@ -78,7 +78,7 @@ class EntryUpdate(BaseModel):
     """Payload nhập OK/NG của một biểu mẫu công đoạn trong lô."""
 
     work_date: date | None = None
-    shift: ShiftName = "KÍP 1"
+    shift: ShiftName = ""
     qty_ok: int = Field(0, ge=0)
     qty_ng: int = Field(0, ge=0)
     tech_name: str = ""
@@ -156,14 +156,14 @@ class StepMachineLogInput(BaseModel):
     machine_code: str = Field(..., min_length=1, max_length=80)
     worker_code: str = Field(..., min_length=1, max_length=80)
     work_date: date | None = None
-    shift: ShiftName = "KÍP 1"
+    shift: ShiftName = ""
     tech_code: str = ""
     qty_ok: int = Field(0, ge=0)
     qty_ng: int = Field(0, ge=0)
     technical_info: str = ""
     note: str = ""
 
-    @field_validator("machine_code", "worker_code")
+    @field_validator("machine_code", "worker_code", "tech_code")
     @classmethod
     def normalize_log_codes(cls, value: str) -> str:
         return value.strip().upper()
@@ -172,6 +172,96 @@ class StepMachineLogInput(BaseModel):
     @classmethod
     def clean_note(cls, value: str) -> str:
         return value.strip()
+
+
+class LotQcRowInput(BaseModel):
+    """Một dòng kiểm tra QC theo lô."""
+
+    check_name: str = ""
+    qty_ok: int = Field(0, ge=0)
+    qty_ng: int = Field(0, ge=0)
+    defect_content: str = ""
+    inspector: str = ""
+
+    @field_validator("check_name", "defect_content", "inspector")
+    @classmethod
+    def clean_qc_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class LotQcSaveInput(BaseModel):
+    """Payload lưu toàn bộ form QC của một lô."""
+
+    qc_date: date | None = None
+    rows: list[LotQcRowInput] = Field(default_factory=list)
+
+
+class LotBaviaRowInput(BaseModel):
+    """Một dòng kiểm tra Bavia theo lô."""
+
+    check_name: str = ""
+    qty_ok: int = Field(0, ge=0)
+    qty_ng: int = Field(0, ge=0)
+    defect_content: str = ""
+    inspector: str = ""
+
+    @field_validator("check_name", "defect_content", "inspector")
+    @classmethod
+    def clean_bavia_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class LotBaviaSaveInput(BaseModel):
+    """Payload lưu toàn bộ form Bavia của một lô."""
+
+    bavia_date: date | None = None
+    rows: list[LotBaviaRowInput] = Field(default_factory=list)
+
+
+class LotBaviaWorkInput(BaseModel):
+    """Một dòng nhập sản lượng của Bavia."""
+
+    machine_code: str = ""
+    worker_code: str = ""
+    work_date: date | None = None
+    shift: str = ""
+    qty_ok: int = Field(0, ge=0)
+    qty_ng: int = Field(0, ge=0)
+    note: str = ""
+
+    @field_validator("machine_code", "worker_code", "shift", "note")
+    @classmethod
+    def clean_work_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class LotBaviaWorkSaveInput(BaseModel):
+    """Payload lưu form nhập sản lượng Bavia."""
+
+    work_date: date | None = None
+    row: LotBaviaWorkInput | None = None
+
+
+class LotWarehouseRowInput(BaseModel):
+    """Một dòng nhập kho thành phẩm."""
+
+    check_name: str = ""
+    qty_ok: int = Field(0, ge=0)
+    qty_ng: int = Field(0, ge=0)
+    defect_content: str = ""
+    performer: str = ""
+
+    @field_validator("check_name", "defect_content", "performer")
+    @classmethod
+    def clean_warehouse_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class LotWarehouseSaveInput(BaseModel):
+    """Payload lưu form kho thành phẩm của một lô."""
+
+    warehouse_date: date | None = None
+    rows: list[LotWarehouseRowInput] = Field(default_factory=list)
 
 
 class ApiMessage(BaseModel):
