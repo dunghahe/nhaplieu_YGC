@@ -111,6 +111,24 @@ body { font-family: Inter, system-ui, sans-serif; }
 .data-table tr.todo { background: #fff; }
 .data-table tr.partial { background: #fefce8; }
 .data-table tr.done { background: #f0fdf4; }
+.warehouse-table th,
+.warehouse-table td {
+  text-align: center;
+  vertical-align: middle;
+}
+.warehouse-table td.mono,
+.warehouse-table th.mono {
+  text-align: center;
+}
+.wh-lot-row {
+  cursor: pointer;
+}
+.wh-lot-row:hover {
+  background: #eff6ff;
+}
+.wh-receipt-row {
+  background: #f8fafc;
+}
 
 /* Thanh tiến độ nhỏ trong bảng lịch sử đơn hàng. */
 .progress-cell {
@@ -132,6 +150,58 @@ body { font-family: Inter, system-ui, sans-serif; }
   height: 100%;
   border-radius: inherit;
   background: #2563eb;
+}
+
+.report-cards-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+.report-card {
+  border: 1px solid #dbe4f0;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  padding: 14px 16px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
+}
+.report-card-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: #64748b;
+  font-weight: 800;
+}
+.report-card-value {
+  margin-top: 6px;
+  font-size: 24px;
+  line-height: 1.1;
+  font-weight: 900;
+  color: #0f172a;
+}
+.report-tab .data-table th,
+.report-tab .data-table td {
+  text-align: center;
+  vertical-align: middle;
+}
+.report-tab .data-table td .badge {
+  display: inline-flex;
+  margin: 0 auto;
+}
+.report-card-note {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #475569;
+  font-weight: 700;
+}
+
+.warehouse-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+.warehouse-detail-meta .badge {
+  justify-content: center;
 }
 
 /* Chú thích màu trạng thái ở màn báo cáo. */
@@ -173,7 +243,7 @@ body { font-family: Inter, system-ui, sans-serif; }
 .badge.error { background: #fee2e2; color: #991b1b; border-color: #fca5a5; }
 
 /* Card nhập liệu từng công đoạn trong màn nhập liệu lô. */
-.entry-card { border-radius: 8px; background: white; padding: 18px; }
+.entry-card { border-radius: 8px; background: white; padding: 12px; }
 .card-todo { border: 2px solid #bfdbfe; }
 .card-partial { border: 2px solid #fde68a; }
 .card-done { border: 2px solid #86efac; }
@@ -189,7 +259,7 @@ body { font-family: Inter, system-ui, sans-serif; }
   border-radius: 8px;
   border: 1px solid #bfdbfe;
   background: #eff6ff;
-  padding: 15px 18px;
+  padding: 11px 14px;
   color: #1e3a8a;
   font-weight: 800;
 }
@@ -217,20 +287,17 @@ body { font-family: Inter, system-ui, sans-serif; }
   border: 1px solid #dbe4f0;
   border-radius: 8px;
   background: #fff;
-  padding: 18px;
+  padding: 12px;
   margin-bottom: 20px;
 }
 .lot-bavia-panel {
-  margin-bottom: 20px;
-}
-.lot-warehouse-panel {
   margin-bottom: 20px;
 }
 .lot-bavia-panel .panel {
   border: 1px solid #dbe4f0;
   border-radius: 8px;
   background: #fff;
-  padding: 18px;
+  padding: 12px;
 }
 .lot-bavia-title {
   margin-bottom: 8px;
@@ -252,41 +319,49 @@ body { font-family: Inter, system-ui, sans-serif; }
   font-size: 14px;
   font-weight: 700;
   line-height: 1.6;
-  padding: 14px 16px;
+  padding: 12px 14px;
 }
 .lot-work-box {
+  container-type: inline-size;
   border-radius: 8px;
   border: 1px solid #e2e8f0;
   background: #f8fafc;
-  padding: 12px;
+  padding: 10px;
 }
 .lot-work-grid {
-  display: flex;
-  flex-wrap: nowrap;
+  display: grid;
+  grid-template-columns: 1.2fr 0.6fr 1.1fr 1.2fr 0.8fr 0.8fr 1fr; /* ngày,kíp,máy,người làm,OK,NG*/
   gap: 8px;
   align-items: end;
-  overflow-x: auto;
 }
-.lot-work-grid .machine-field { flex: 0 0 auto; }
-.lot-work-grid .machine-field:nth-child(1),
-.lot-work-grid .machine-field:nth-child(2) { min-width: 200px; }
-.lot-work-grid .machine-field:nth-child(3) { min-width: 120px; }
-.lot-work-grid .machine-field:nth-child(4) { min-width: 100px; }
-.lot-work-grid .machine-field:nth-child(5),
-.lot-work-grid .machine-field:nth-child(6) { min-width: 74px; }
-.lot-work-grid .machine-field:nth-child(7) { min-width: 180px; }
+.lot-work-grid .machine-field {
+  min-width: 0;
+}
 .lot-work-grid .field-label {
   margin-bottom: 4px;
   font-size: 11px;
 }
 .lot-work-grid .input {
   min-height: 36px;
-  padding-top: 7px;
-  padding-bottom: 7px;
+  padding-top: 5px;
+  padding-bottom: 5px;
 }
 .lot-work-grid .input[type="date"],
 .lot-work-grid select.input {
+  font-size: 13px;
   padding-right: 28px;
+}
+.lot-work-grid select.input:has(option[value=""]:checked) {
+  color: #94a3b8;
+}
+.lot-work-grid select.input option {
+  color: #0f172a;
+}
+@container (max-width: 700px) {
+  .lot-work-grid { grid-template-columns: 1fr 1fr; }
+}
+@container (max-width: 460px) {
+  .lot-work-grid { grid-template-columns: 1fr; }
 }
 .lot-work-footer {
   display: flex;
@@ -310,7 +385,7 @@ body { font-family: Inter, system-ui, sans-serif; }
   gap: 8px 16px;
   align-items: center;
   margin-bottom: 14px;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 800;
   color: #1e293b;
 }
@@ -321,12 +396,12 @@ body { font-family: Inter, system-ui, sans-serif; }
 .lot-qc-table th,
 .lot-qc-table td {
   border: 1px solid #dbe4f0;
-  padding: 8px;
+  padding: 6px;
   vertical-align: top;
 }
 .lot-qc-table th {
   background: #f8fafc;
-  font-size: 12px;
+  font-size: 11px;
   text-transform: uppercase;
   color: #475569;
 }
@@ -336,12 +411,14 @@ body { font-family: Inter, system-ui, sans-serif; }
   font-weight: 900;
 }
 .lot-qc-table .input {
-  min-height: 38px;
+  min-height: 32px;
+  padding-top: 5px;
+  padding-bottom: 5px;
 }
 .qc-check-cell {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   font-weight: 900;
   color: #0f172a;
 }
@@ -352,7 +429,7 @@ body { font-family: Inter, system-ui, sans-serif; }
   border-radius: 999px;
   background: #dbeafe;
   color: #1d4ed8;
-  font-size: 12px;
+  font-size: 11px;
   padding: 2px 6px;
 }
 .lot-qc-row-action {
@@ -363,7 +440,7 @@ body { font-family: Inter, system-ui, sans-serif; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 38px;
+  min-height: 32px;
   width: 100%;
   color: #94a3b8;
   font-weight: 800;
@@ -372,10 +449,10 @@ body { font-family: Inter, system-ui, sans-serif; }
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 38px;
+  min-height: 32px;
   width: 100%;
   color: #94a3b8;
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 900;
   line-height: 1;
   background: linear-gradient(135deg, transparent 49%, #cbd5e1 49%, #cbd5e1 51%, transparent 51%);
@@ -548,29 +625,22 @@ body { font-family: Inter, system-ui, sans-serif; }
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
+.machine-delete-btn {
+  min-width: 54px;
+  flex-shrink: 0;
+}
+
 .machine-row-grid {
-  display: flex;
-  flex-wrap: nowrap;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr 1.3fr 1.3fr 1.3fr 0.9fr 0.9fr auto; /* Tên máy, số lượng, công nhân, giờ bắt đầu, giờ kết thúc, phút, giây, action */
+  gap: 8px; /*padding*/
   align-items: end;
-  overflow-x: auto;
 }
-.machine-row-actions {
-  display: flex;
-  align-items: end;
-  justify-content: flex-end;
-  flex: 0 0 auto;
+.machine-row-grid .machine-field {
+  min-width: 0;
 }
-.machine-row-grid .machine-field { flex: 0 0 auto; }
-.machine-row-grid .machine-field:nth-child(1),
-.machine-row-grid .machine-field:nth-child(2) { min-width: 200px; }
-.machine-row-grid .machine-field:nth-child(3) { min-width: 120px; }
-.machine-row-grid .machine-field:nth-child(4) { min-width: 100px; }
-.machine-row-grid .machine-field:nth-child(5),
-.machine-row-grid .machine-field:nth-child(6) { min-width: 74px; }
-.machine-row-grid .machine-field:nth-child(7) { min-width: 180px; }
 .machine-num-field .input {
   text-align: center;
 }
@@ -580,8 +650,18 @@ body { font-family: Inter, system-ui, sans-serif; }
 }
 .machine-row-grid .input {
   min-height: 36px;
-  padding-top: 7px;
-  padding-bottom: 7px;
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+.machine-note-field {
+  grid-column: 1 / -1;
+}
+.machine-note-field textarea.input,
+.machine-note-input {
+  min-height: 68px;
+  resize: vertical;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .machine-num-field .ok-input {
   border-color: #34d399;
@@ -601,9 +681,15 @@ body { font-family: Inter, system-ui, sans-serif; }
 .machine-row-grid select.input {
   font-size: 13px;
 }
+.machine-row-grid select.input:has(option[value=""]:checked) {
+  color: #94a3b8;
+}
+.machine-row-grid select.input option {
+  color: #0f172a; 
+}
 .qc-check-name {
   display: inline-flex;
-  min-height: 38px;
+  min-height: 32px;
   align-items: center;
   font-weight: 800;
   color: #0f172a;
@@ -696,8 +782,10 @@ body { font-family: Inter, system-ui, sans-serif; }
   height: 100px;
 }
 @container (max-width: 700px) {
-  .machine-row-grid { flex-wrap: wrap; }
-  .machine-row-grid .machine-field { min-width: 100%; }
+  .machine-row-grid { grid-template-columns: 1fr 1fr; }
+}
+@container (max-width: 460px) {
+  .machine-row-grid { grid-template-columns: 1fr; }
 }
 @container (max-width: 420px) {
   .machine-row-actions { justify-content: stretch; }
@@ -926,10 +1014,16 @@ body { font-family: Inter, system-ui, sans-serif; }
     background: #fff !important;
     color: #000 !important;
     font-family: "Segoe UI", Arial, sans-serif !important;
-    font-size: 8px !important;
+    font-size: 9px !important;
   }
   body.printing-lot-sheet .lot-sheet {
     width: 100%;
+    break-after: page;
+    page-break-after: always;
+  }
+  body.printing-lot-sheet .lot-sheet:last-child {
+    break-after: auto;
+    page-break-after: auto;
   }
   body.printing-lot-sheet .print-table {
     width: 100%;
@@ -939,31 +1033,46 @@ body { font-family: Inter, system-ui, sans-serif; }
   body.printing-lot-sheet .print-table th,
   body.printing-lot-sheet .print-table td {
     border: 1px solid #000;
-    padding: 2px 3px;
+    padding: 3px 4px;
     vertical-align: top;
-    font-size: 7px;
+    font-size: 8px;
   }
   body.printing-lot-sheet .sheet-logo {
-    width: 30mm;
+    width: 34mm;
     text-align: center;
+    vertical-align: middle;
   }
   body.printing-lot-sheet .logo-main {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 700;
   }
   body.printing-lot-sheet .sheet-title {
     text-align: center;
-    font-size: 12px;
+    font-size: 18px;
     font-weight: 700;
+    vertical-align: middle;
+    padding-top: 0;
+    padding-bottom: 0;
+    line-height: 1.05;
+  }
+  body.printing-lot-sheet .print-table td.sheet-title {
+    font-size: 18px !important;
+    line-height: 1.1 !important;
   }
   body.printing-lot-sheet .sheet-meta {
-    width: 38mm;
-    font-size: 7px;
+    width: 40mm;
+    font-size: 8px;
+    vertical-align: middle;
+  }
+  body.printing-lot-sheet .sheet-head td {
+    vertical-align: middle;
   }
   body.printing-lot-sheet .section-title {
     text-align: left;
     background: #f3f4f6;
     font-weight: 800;
+    padding-top: var(--section-title-pad-y, 1px);
+    padding-bottom: var(--section-title-pad-y, 1px);
   }
   body.printing-lot-sheet .material-print-table,
   body.printing-lot-sheet .process-title,
@@ -975,26 +1084,51 @@ body { font-family: Inter, system-ui, sans-serif; }
   body.printing-lot-sheet .material-print-table th,
   body.printing-lot-sheet .material-print-table td {
     padding: 1px 2px;
-    line-height: 1.1;
-    font-size: 6px;
+    line-height: 1.06;
+    font-size: 8.2px;
+    vertical-align: middle;
   }
   body.printing-lot-sheet .material-print-table b {
-    font-size: 7px;
+    font-size: 11px;
   }
   body.printing-lot-sheet .lot-qr-cell {
     text-align: center;
+    vertical-align: middle;
+    padding: 1px 2px;
+  }
+  body.printing-lot-sheet .material-qr-block {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    align-items: center;
+    height: 100%;
+    min-height: 100%;
+  }
+  body.printing-lot-sheet .material-qr-top {
+    width: 100%;
+    text-align: center;
+    font-size: 8px;
+    line-height: 1.05;
+    font-weight: 700;
+  }
+  body.printing-lot-sheet .material-qr-main {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1px;
+    line-height: 1;
   }
   body.printing-lot-sheet .print-qr {
     display: block;
-    margin: 2px auto;
+    margin: 0 auto;
   }
   body.printing-lot-sheet .lot-print-qr {
-    width: 22mm;
-    height: 22mm;
+    width: 24mm;
+    height: 24mm;
   }
   body.printing-lot-sheet .form-print-qr {
-    width: 20mm;
-    height: 20mm;
+    width: 22mm;
+    height: 22mm;
   }
   body.printing-lot-sheet .step-block {
     break-inside: avoid;
@@ -1005,8 +1139,8 @@ body { font-family: Inter, system-ui, sans-serif; }
   }
   body.printing-lot-sheet .step-write-cell {
     width: 52%;
-    font-size: 11px;
-    line-height: 1.8;
+    font-size: 15px;
+    line-height: 1.35;
   }
   body.printing-lot-sheet .small-code {
     font-size: 7px;
@@ -1020,35 +1154,56 @@ body { font-family: Inter, system-ui, sans-serif; }
   body.printing-lot-sheet .process-print-table .op-title {
     text-align: left;
   }
+  body.printing-lot-sheet .process-print-table .section-title,
+  body.printing-lot-sheet .compact-print-table .section-title {
+    padding-top: 0.5px;
+    padding-bottom: 0.5px;
+    font-size: 8.5px;
+    line-height: 1;
+  }
   body.printing-lot-sheet .process-head th {
-    height: 5mm;
+    height: var(--process-head-height, 6.5mm);
     font-weight: 400;
     vertical-align: middle;
-    font-size: 7px;
+    font-size: 9px;
   }
   body.printing-lot-sheet .process-write-row td {
-    height: 10mm;
-    font-size: 7px;
+    height: var(--process-row-height, 15.5mm);
+    font-size: 9px;
   }
   body.printing-lot-sheet .compact-print-table th,
   body.printing-lot-sheet .compact-print-table td {
-    font-size: 7px;
+    font-size: var(--compact-font-size, 9px);
+    padding: var(--compact-pad-y, 4px) var(--compact-pad-x, 5px);
   }
   body.printing-lot-sheet .print-meta-row td {
     line-height: 1.2;
   }
   body.printing-lot-sheet .print-head-row th {
-    font-size: 7px;
+    font-size: var(--compact-font-size, 9px);
     font-weight: 600;
     text-align: center;
   }
   body.printing-lot-sheet .print-data-row td {
-    height: 6mm;
+    height: var(--compact-row-height, 10.5mm);
+    font-size: var(--compact-font-size, 9px);
+  }
+  body.printing-lot-sheet .lot-sheet > .compact-print-table:last-of-type th,
+  body.printing-lot-sheet .lot-sheet > .compact-print-table:last-of-type td {
+    font-size: 9.5px;
+    padding: 4px 5px;
+  }
+  body.printing-lot-sheet .lot-sheet > .compact-print-table:last-of-type .print-head-row th {
+    font-size: 9.5px;
+  }
+  body.printing-lot-sheet .lot-sheet > .compact-print-table:last-of-type .print-data-row td {
+    height: 8.5mm;
+    font-size: 9.5px;
   }
   body.printing-lot-sheet .warehouse-slash-cell {
     min-height: 0;
-    height: 5mm;
-    font-size: 10px;
+    height: 7.5mm;
+    font-size: 12px;
     background: linear-gradient(135deg, transparent 49%, #000 49%, #000 51%, transparent 51%);
   }
   body.printing-lot-sheet .print-summary-row td {

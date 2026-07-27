@@ -4,6 +4,7 @@ import math
 import re
 import sqlite3
 import unicodedata
+from datetime import datetime
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -24,6 +25,9 @@ def connect() -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = dict_factory
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
     try:
         yield conn
         conn.commit()
@@ -49,7 +53,6 @@ def split_lot_quantities(total_qty: int, qty_per_lot: int) -> list[int]:
         raise ValueError("Số lượng PCS/lô phải > 0")
     if qty_per_lot > total_qty:
         return [total_qty]
-    import math
     total_lots = math.ceil(total_qty / qty_per_lot)
     lots = [qty_per_lot for _ in range(total_lots - 1)]
     last_lot_qty = total_qty % qty_per_lot or qty_per_lot
@@ -104,6 +107,9 @@ def init_db() -> None:
               part_code   TEXT NOT NULL,
               qty_per_lot REAL NOT NULL,
               lot_index   INTEGER NOT NULL,
+              printed     INTEGER NOT NULL DEFAULT 0,
+              blank_received_by   TEXT DEFAULT '',
+              blank_received_at   TEXT DEFAULT '',
               created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -114,7 +120,7 @@ def init_db() -> None:
               step_name   TEXT NOT NULL,
               work_date   DATE,
               shift       TEXT DEFAULT 'KÍP 1'
-                            CHECK(shift IN ('KÍP 1','KÍP 2','KÍP 3','TĂNG CA')),
+                            CHECK(shift IN ('KÍP 1','KÍP 2','TĂNG CA')),
               qty_ok      INTEGER DEFAULT 0,
               qty_ng      INTEGER DEFAULT 0,
               tech_name   TEXT DEFAULT '',
@@ -215,14 +221,17 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS lot_bavia_work_rows (
               id           INTEGER PRIMARY KEY AUTOINCREMENT,
               lot_code     TEXT NOT NULL REFERENCES lot_bavia_work_forms(lot_code) ON DELETE CASCADE,
+              line_index   INTEGER NOT NULL DEFAULT 1,
               machine_code TEXT DEFAULT '',
               worker_code  TEXT DEFAULT '',
+              tech_code    TEXT DEFAULT '',
               work_date    TEXT DEFAULT '',
               shift        TEXT DEFAULT '',
               qty_ok       INTEGER DEFAULT 0,
               qty_ng       INTEGER DEFAULT 0,
               note         TEXT DEFAULT '',
-              created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+              created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(lot_code, line_index)
             );
 
             CREATE TABLE IF NOT EXISTS lot_warehouse_forms (
@@ -247,6 +256,16 @@ def init_db() -> None:
             );
             """
         )
+        lot_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(lots)").fetchall()
+        }
+        if "printed" not in lot_columns:
+            conn.execute("ALTER TABLE lots ADD COLUMN printed INTEGER NOT NULL DEFAULT 0")
+        if "blank_received_by" not in lot_columns:
+            conn.execute("ALTER TABLE lots ADD COLUMN blank_received_by TEXT DEFAULT ''")
+        if "blank_received_at" not in lot_columns:
+            conn.execute("ALTER TABLE lots ADD COLUMN blank_received_at TEXT DEFAULT ''")
         columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(part_steps)").fetchall()
@@ -358,8 +377,10 @@ def init_db() -> None:
                 CREATE TABLE IF NOT EXISTS lot_bavia_work_rows (
                   id           INTEGER PRIMARY KEY AUTOINCREMENT,
                   lot_code     TEXT NOT NULL REFERENCES lot_bavia_work_forms(lot_code) ON DELETE CASCADE,
+                  line_index   INTEGER NOT NULL DEFAULT 1,
                   machine_code TEXT DEFAULT '',
                   worker_code  TEXT DEFAULT '',
+                  tech_code    TEXT DEFAULT '',
                   work_date    TEXT DEFAULT '',
                   shift        TEXT DEFAULT '',
                   qty_ok       INTEGER DEFAULT 0,
@@ -369,6 +390,23 @@ def init_db() -> None:
                 )
                 """
             )
+        if "tech_code" not in bavia_work_row_cols:
+            conn.execute("ALTER TABLE lot_bavia_work_rows ADD COLUMN tech_code TEXT DEFAULT ''")
+        if "line_index" not in bavia_work_row_cols:
+            conn.execute("ALTER TABLE lot_bavia_work_rows ADD COLUMN line_index INTEGER NOT NULL DEFAULT 0")
+            # Dữ liệu cũ mỗi lô chỉ có tối đa 1 dòng (bản trước ghi đè), nên đánh số lại theo id để an toàn.
+            counters: dict[str, int] = {}
+            for row in conn.execute(
+                "SELECT id, lot_code FROM lot_bavia_work_rows ORDER BY lot_code, id"
+            ).fetchall():
+                counters[row["lot_code"]] = counters.get(row["lot_code"], 0) + 1
+                conn.execute(
+                    "UPDATE lot_bavia_work_rows SET line_index = ? WHERE id = ?",
+                    (counters[row["lot_code"]], row["id"]),
+                )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_bavia_work_rows_lot_line ON lot_bavia_work_rows(lot_code, line_index)"
+        )
         warehouse_form_cols = {row["name"] for row in conn.execute("PRAGMA table_info(lot_warehouse_forms)").fetchall()}
         if not warehouse_form_cols:
             conn.execute(
@@ -427,7 +465,46 @@ def init_db() -> None:
         for column_name, column_type in order_extra_columns.items():
             if column_name not in order_columns:
                 conn.execute(f"ALTER TABLE orders ADD COLUMN {column_name} {column_type}")
+        # Bảng phiếu nhập kho mới (đơn giản: qty + date, nhiều phiếu/lô)
+        receipts_cols = {row["name"] for row in conn.execute("PRAGMA table_info(lot_warehouse_receipts)").fetchall()}
+        if not receipts_cols:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lot_warehouse_receipts (
+                  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                  lot_code     TEXT NOT NULL REFERENCES lots(lot_code) ON DELETE CASCADE,
+                  qty          INTEGER NOT NULL DEFAULT 0,
+                  receipt_date TEXT DEFAULT '',
+                  note         TEXT DEFAULT '',
+                  created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
 
+        # Index cho các truy vấn lớn / báo cáo / lọc theo ngày
+        index_statements = [
+            "CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at DESC, id DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_orders_part_code ON orders(part_code)",
+            "CREATE INDEX IF NOT EXISTS idx_orders_order_receive_date ON orders(order_receive_date)",
+            "CREATE INDEX IF NOT EXISTS idx_orders_effective_date ON orders(COALESCE(NULLIF(order_receive_date, ''), substr(created_at, 1, 10)))",
+            "CREATE INDEX IF NOT EXISTS idx_lots_order_code ON lots(order_code, lot_index)",
+            "CREATE INDEX IF NOT EXISTS idx_lots_part_code ON lots(part_code)",
+            "CREATE INDEX IF NOT EXISTS idx_step_entries_lot_code_id ON step_entries(lot_code, id DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_step_entries_work_date ON step_entries(work_date)",
+            "CREATE INDEX IF NOT EXISTS idx_step_entries_status ON step_entries(status)",
+            "CREATE INDEX IF NOT EXISTS idx_step_machine_logs_form_line ON step_machine_logs(form_id, line_index)",
+            "CREATE INDEX IF NOT EXISTS idx_step_machine_logs_machine_code ON step_machine_logs(machine_code)",
+            "CREATE INDEX IF NOT EXISTS idx_step_machine_logs_work_date ON step_machine_logs(work_date)",
+            "CREATE INDEX IF NOT EXISTS idx_part_steps_part_order ON part_steps(part_id, step_order)",
+            "CREATE INDEX IF NOT EXISTS idx_part_steps_part_step_name ON part_steps(part_id, UPPER(TRIM(step_name)))",
+            "CREATE INDEX IF NOT EXISTS idx_lot_warehouse_receipts_lot_id ON lot_warehouse_receipts(lot_code, id DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_lot_qc_forms_date ON lot_qc_forms(qc_date)",
+            "CREATE INDEX IF NOT EXISTS idx_lot_bavia_forms_date ON lot_bavia_forms(bavia_date)",
+            "CREATE INDEX IF NOT EXISTS idx_lot_bavia_work_forms_date ON lot_bavia_work_forms(work_date)",
+            "CREATE INDEX IF NOT EXISTS idx_lot_warehouse_forms_date ON lot_warehouse_forms(warehouse_date)",
+        ]
+        for stmt in index_statements:
+            conn.execute(stmt)
 
 def get_machines(include_inactive: bool = True) -> list[dict[str, Any]]:
     """Lấy danh sách máy CNC; master screen cần cả active/inactive."""
@@ -537,78 +614,79 @@ def get_parts() -> list[dict[str, Any]]:
 def get_parts_summary(date_from: str | None = None, date_to: str | None = None) -> list[dict[str, Any]]:
     """Thống kê theo mã hàng: số đơn, tổng SL, đơn hoàn thành, OK, NG, có lọc ngày tạo đơn."""
     with connect() as conn:
-        parts = conn.execute("SELECT id, part_code, created_at FROM parts ORDER BY created_at DESC, id DESC").fetchall()
-        result = []
-        for part in parts:
-            # Build date filter clause
-            date_cond = ""
-            params: list[Any] = [part["part_code"]]
-            if date_from:
-                date_cond += " AND o.created_at >= ?"
-                params.append(date_from)
-            if date_to:
-                date_cond += " AND o.created_at <= ?"
-                params.append(date_to + " 23:59:59")
+        where_clause = ""
+        params: list[Any] = []
+        if date_from:
+            where_clause += " AND o.created_at >= ?"
+            params.append(f"{date_from} 00:00:00")
+        if date_to:
+            where_clause += " AND o.created_at <= ?"
+            params.append(f"{date_to} 23:59:59")
 
-            orders_row = conn.execute(
-                f"""
-                SELECT COUNT(DISTINCT o.order_code) AS order_count,
-                       COALESCE(SUM(o.total_qty), 0) AS total_qty
-                FROM orders o
-                WHERE o.part_code = ?{date_cond}
-                """,
-                params,
-            ).fetchone()
-
-            stats_row = conn.execute(
-                f"""
-                SELECT COALESCE(SUM(se.qty_ok), 0) AS total_ok,
-                       COALESCE(SUM(se.qty_ng), 0) AS total_ng
-                FROM step_entries se
-                JOIN lots l ON l.lot_code = se.lot_code
-                JOIN orders o ON o.order_code = l.order_code
-                WHERE o.part_code = ?{date_cond}
-                """,
-                params,
-            ).fetchone()
-
-            completed_row = conn.execute(
-                f"""
-                SELECT COUNT(*) AS completed_orders
-                FROM orders o
-                WHERE o.part_code = ?{date_cond}
-                  AND NOT EXISTS (
-                    SELECT 1
-                    FROM lots l
-                    WHERE l.order_code = o.order_code
-                      AND (
-                        NOT EXISTS (
-                          SELECT 1
-                          FROM step_entries se
-                          WHERE se.lot_code = l.lot_code
-                        )
-                        OR EXISTS (
-                          SELECT 1
-                          FROM step_entries se
-                          WHERE se.lot_code = l.lot_code
-                            AND se.status != 'done'
-                        )
-                      )
-                  )
-                """,
-                params,
-            ).fetchone()
-
-            result.append({
-                "part_code": part["part_code"],
-                "created_at": part["created_at"],
-                "order_count": orders_row["order_count"] or 0,
-                "total_qty": orders_row["total_qty"] or 0,
-                "completed_orders": completed_row["completed_orders"] or 0,
-                "total_ok": stats_row["total_ok"] or 0,
-                "total_ng": stats_row["total_ng"] or 0,
-            })
-        return result
+        return conn.execute(
+            f"""
+            WITH filtered_orders AS (
+              SELECT o.order_code, o.part_code, o.total_qty
+              FROM orders o
+              WHERE 1=1{where_clause}
+            ),
+            order_stats AS (
+              SELECT fo.part_code,
+                     COUNT(*) AS order_count,
+                     COALESCE(SUM(fo.total_qty), 0) AS total_qty
+              FROM filtered_orders fo
+              GROUP BY fo.part_code
+            ),
+            entry_stats AS (
+              SELECT fo.part_code,
+                     COALESCE(SUM(se.qty_ok), 0) AS total_ok,
+                     COALESCE(SUM(se.qty_ng), 0) AS total_ng
+              FROM filtered_orders fo
+              JOIN lots l ON l.order_code = fo.order_code
+              JOIN step_entries se ON se.lot_code = l.lot_code
+              GROUP BY fo.part_code
+            ),
+            lot_stats AS (
+              SELECT l.order_code,
+                     l.lot_code,
+                     COALESCE(se.total_entries, 0) AS total_entries,
+                     COALESCE(se.not_done_entries, 0) AS not_done_entries
+              FROM lots l
+              LEFT JOIN (
+                SELECT lot_code,
+                       COUNT(*) AS total_entries,
+                       COALESCE(SUM(CASE WHEN status != 'done' THEN 1 ELSE 0 END), 0) AS not_done_entries
+                FROM step_entries
+                GROUP BY lot_code
+              ) se ON se.lot_code = l.lot_code
+            ),
+            completed_stats AS (
+              SELECT fo.part_code,
+                     COUNT(*) AS completed_orders
+              FROM filtered_orders fo
+              JOIN lot_stats ls ON ls.order_code = fo.order_code
+              GROUP BY fo.part_code, fo.order_code
+              HAVING MIN(CASE WHEN ls.total_entries > 0 AND ls.not_done_entries = 0 THEN 1 ELSE 0 END) = 1
+            )
+            SELECT p.part_code,
+                   p.created_at,
+                   COALESCE(os.order_count, 0) AS order_count,
+                   COALESCE(os.total_qty, 0) AS total_qty,
+                   COALESCE(cs.completed_orders, 0) AS completed_orders,
+                   COALESCE(es.total_ok, 0) AS total_ok,
+                   COALESCE(es.total_ng, 0) AS total_ng
+            FROM parts p
+            LEFT JOIN order_stats os ON os.part_code = p.part_code
+            LEFT JOIN entry_stats es ON es.part_code = p.part_code
+            LEFT JOIN (
+              SELECT part_code, SUM(completed_orders) AS completed_orders
+              FROM completed_stats
+              GROUP BY part_code
+            ) cs ON cs.part_code = p.part_code
+            ORDER BY p.created_at DESC, p.id DESC
+            """,
+            params,
+        ).fetchall()
 
 
 def get_part(part_code: str) -> dict[str, Any] | None:
@@ -712,21 +790,30 @@ def update_part_steps(part_code: str, steps: list[dict[str, Any]]) -> None:
 def get_orders() -> list[dict[str, Any]]:
     """Lấy đơn hàng kèm phần trăm hoàn thành dựa trên step_entries đã done."""
     with connect() as conn:
-        orders = conn.execute("SELECT * FROM orders ORDER BY created_at DESC, id DESC").fetchall()
-        for order in orders:
-            total_entries = conn.execute(
-                """
-                SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done
-                FROM step_entries se
-                JOIN lots l ON l.lot_code = se.lot_code
-                WHERE l.order_code = ?
-                """,
-                (order["order_code"],),
-            ).fetchone()
-            total = total_entries["total"] or 0
-            done = total_entries["done"] or 0
-            order["progress_percent"] = round(done * 100 / total, 1) if total else 0
-        return orders
+        return conn.execute(
+            """
+            WITH entry_stats AS (
+              SELECT l.order_code,
+                     COUNT(se.id) AS total_entries,
+                     COALESCE(SUM(CASE WHEN se.status = 'done' THEN 1 ELSE 0 END), 0) AS done_entries
+              FROM lots l
+              LEFT JOIN step_entries se ON se.lot_code = l.lot_code
+              GROUP BY l.order_code
+            )
+            SELECT o.*,
+                   ROUND(
+                     CASE
+                       WHEN COALESCE(es.total_entries, 0) > 0
+                       THEN COALESCE(es.done_entries, 0) * 100.0 / es.total_entries
+                       ELSE 0
+                     END,
+                     1
+                   ) AS progress_percent
+            FROM orders o
+            LEFT JOIN entry_stats es ON es.order_code = o.order_code
+            ORDER BY o.created_at DESC, o.id DESC
+            """
+        ).fetchall()
 
 
 def get_order(order_code: str) -> dict[str, Any] | None:
@@ -890,10 +977,89 @@ def get_order_with_lots(order_code: str) -> dict[str, Any]:
         if not order:
             raise LookupError("Không tìm thấy đơn hàng")
         order["lots"] = conn.execute(
-            "SELECT lot_code, qty_per_lot, lot_index FROM lots WHERE order_code = ? ORDER BY lot_index",
+            """
+            SELECT lot_code, qty_per_lot, lot_index, printed,
+                   blank_received_by, blank_received_at
+            FROM lots
+            WHERE order_code = ?
+            ORDER BY lot_index
+            """,
             (order_code,),
         ).fetchall()
         return order
+
+
+def mark_order_lots_printed(order_code: str, start_index: int, end_index: int) -> dict[str, Any]:
+    """Đánh dấu một dải lô trong đơn là đã in."""
+    if start_index <= 0 or end_index <= 0:
+        raise ValueError("Số lô phải lớn hơn 0")
+    if start_index > end_index:
+        raise ValueError("Lô bắt đầu phải nhỏ hơn hoặc bằng lô kết thúc")
+
+    with connect() as conn:
+        order = conn.execute(
+            "SELECT order_code, total_lots FROM orders WHERE order_code = ?",
+            (order_code,),
+        ).fetchone()
+        if not order:
+            raise LookupError("Không tìm thấy đơn hàng")
+        total_lots = int(order["total_lots"] or 0)
+        if end_index > total_lots:
+            raise ValueError(f"Lô kết thúc không được vượt quá tổng số lô ({total_lots})")
+
+        conn.execute(
+            """
+            UPDATE lots
+            SET printed = 1
+            WHERE order_code = ? AND lot_index BETWEEN ? AND ?
+            """,
+            (order_code, start_index, end_index),
+        )
+        printed_total = conn.execute(
+            "SELECT COUNT(*) AS count_printed FROM lots WHERE order_code = ? AND printed = 1",
+            (order_code,),
+        ).fetchone()["count_printed"]
+        return {
+            "order_code": order_code,
+            "start_index": start_index,
+            "end_index": end_index,
+            "marked": end_index - start_index + 1,
+            "printed_total": int(printed_total or 0),
+            "total_lots": total_lots,
+        }
+
+
+def save_lot_blank_receipt(lot_code: str, received_by: str, received_at: Any) -> dict[str, Any]:
+    """Lưu thông tin nhận phôi cho một lô."""
+    received_by = str(received_by or "").strip()
+    if not received_by:
+        raise ValueError("Vui lòng nhập người nhận phôi")
+
+    if isinstance(received_at, datetime):
+        received_at_text = received_at.isoformat(timespec="minutes")
+    else:
+        received_at_text = str(received_at or "").strip()
+        if not received_at_text:
+            raise ValueError("Vui lòng chọn thời gian nhận phôi")
+        try:
+            received_at_text = datetime.fromisoformat(received_at_text).isoformat(timespec="minutes")
+        except ValueError as exc:
+            raise ValueError("Thời gian nhận phôi không hợp lệ") from exc
+
+    with connect() as conn:
+        lot = conn.execute("SELECT * FROM lots WHERE lot_code = ?", (lot_code,)).fetchone()
+        if not lot:
+            raise LookupError("Không tìm thấy lô")
+        conn.execute(
+            """
+            UPDATE lots
+            SET blank_received_by = ?, blank_received_at = ?
+            WHERE lot_code = ?
+            """,
+            (received_by, received_at_text, lot_code),
+        )
+        updated = conn.execute("SELECT * FROM lots WHERE lot_code = ?", (lot_code,)).fetchone()
+        return updated
 
 
 def delete_order(order_code: str) -> None:
@@ -984,20 +1150,19 @@ def get_lot_last_output(conn: sqlite3.Connection, lot_code: str) -> dict[str, An
 
 
 def get_lot_bavia_work_limit(conn: sqlite3.Connection, lot_code: str) -> int:
-    """Lấy số lượng tối đa của Bavia từ tổng OK+NG đã nhập ở form Bavia work."""
+    """Lấy số lượng tối đa của Bavia từ tổng OK+NG đã nhập ở tất cả các dòng Bavia work."""
     row = conn.execute(
         """
-        SELECT COALESCE(qty_ok, 0) AS qty_ok,
-               COALESCE(qty_ng, 0) AS qty_ng
+        SELECT COALESCE(SUM(qty_ok), 0) AS qty_ok,
+               COALESCE(SUM(qty_ng), 0) AS qty_ng
         FROM lot_bavia_work_rows
         WHERE lot_code = ?
-        ORDER BY id DESC
-        LIMIT 1
         """,
         (lot_code,),
     ).fetchone()
-    if row:
-        return int(row["qty_ok"] or 0) + int(row["qty_ng"] or 0)
+    total = int(row["qty_ok"] or 0) + int(row["qty_ng"] or 0) if row else 0
+    if total:
+        return total
     form_row = conn.execute(
         "SELECT max_qty FROM lot_bavia_work_forms WHERE lot_code = ?",
         (lot_code,),
@@ -1016,7 +1181,7 @@ def _get_quality_form(
     row_limit: int,
     use_bavia_work_limit: bool = False,
 ) -> dict[str, Any] | None:
-    """L?y form ch?t l??ng theo l? cho QC/Bavia."""
+    """Lấy form chất lượng theo lô cho QC/Bavia."""
     with connect() as conn:
         lot = conn.execute("SELECT * FROM lots WHERE lot_code = ?", (lot_code,)).fetchone()
         if not lot:
@@ -1029,7 +1194,7 @@ def _get_quality_form(
             FROM {row_table}
             WHERE lot_code = ?
               AND line_index BETWEEN 1 AND ?
-              AND UPPER(COALESCE(check_name, '')) != 'T?NG'
+              AND UPPER(COALESCE(check_name, '')) != 'TỔNG'
             ORDER BY line_index
             """,
             (lot_code, row_limit),
@@ -1075,11 +1240,11 @@ def _save_quality_form(
     row_limit: int,
     use_bavia_work_limit: bool = False,
 ) -> dict[str, Any]:
-    """L?u form ch?t l??ng theo l? cho QC/Bavia."""
+    """Lưu form chất lượng theo lô cho QC/Bavia."""
     with connect() as conn:
         lot = conn.execute("SELECT * FROM lots WHERE lot_code = ?", (lot_code,)).fetchone()
         if not lot:
-            raise LookupError("Kh?ng t?m th?y l?")
+            raise LookupError("Không tìm thấy lô")
         last_output = get_lot_last_output(conn, lot_code)
         max_qty = get_lot_bavia_work_limit(conn, lot_code) if use_bavia_work_limit else int(last_output["max_qty"] or 0)
         form_date = str(payload.get(date_key) or "").strip()
@@ -1093,19 +1258,19 @@ def _save_quality_form(
             defect_content = str(row.get("defect_content") or "").strip()
             inspector = str(row.get("inspector") or "").strip()
             raw_check_name = str(row.get("check_name") or "").strip().upper()
-            if raw_check_name == "T?NG":
+            if raw_check_name == "TỔNG":
                 continue
             has_data = (qty_ok + qty_ng) > 0
             if blank_seen and has_data:
-                raise ValueError("C?ng ?o?n ph?i nh?p tu?n t?, kh?ng ???c b? tr?ng c?ng ?o?n tr??c")
+                raise ValueError("Công đoạn phải nhập tuần tự, không được bỏ trống công đoạn trước")
             if not has_data:
                 blank_seen = True
                 continue
             if index > 1 and previous_total <= 0:
-                raise ValueError("C?ng ?o?n tr??c ch?a c? d? li?u, ch?a th? nh?p c?ng ?o?n sau")
+                raise ValueError("Công đoạn trước chưa có dữ liệu, chưa thể nhập công đoạn sau")
             row_limit_qty = max_qty if index == 1 else previous_total
             if row_limit_qty and qty_ok + qty_ng > row_limit_qty:
-                raise ValueError(f"T?ng OK + NG c?a c?ng ?o?n kh?ng ???c v??t qu? s? l??ng t?i ?a {row_limit_qty}")
+                raise ValueError(f"Tổng OK + NG của công đoạn không được vượt quá số lượng tối đa {row_limit_qty}")
             if not inspector:
                 raise ValueError("Vui lòng chọn người kiểm tra cho tất cả các dòng có dữ liệu")
             cleaned_rows.append({
@@ -1165,7 +1330,7 @@ def _save_quality_form(
 
 
 def get_lot_qc(lot_code: str) -> dict[str, Any] | None:
-    """L?y form QC c?a l?, n?u ch?a c? d? li?u th? tr? v? m?u r?ng."""
+    """Lấy form QC của lô, nếu chưa có dữ liệu thì trả về mẫu rỗng."""
     return _get_quality_form(
         lot_code,
         form_table="lot_qc_forms",
@@ -1178,7 +1343,7 @@ def get_lot_qc(lot_code: str) -> dict[str, Any] | None:
 
 
 def save_lot_qc(lot_code: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """L?u to?n b? form QC theo l?."""
+    """Lưu toàn bộ form QC theo lô."""
     return _save_quality_form(
         lot_code,
         payload,
@@ -1192,7 +1357,7 @@ def save_lot_qc(lot_code: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def get_lot_bavia(lot_code: str) -> dict[str, Any] | None:
-    """L?y form Bavia c?a l?, n?u ch?a c? d? li?u th? tr? v? m?u r?ng."""
+    """Lấy form Bavia của lô, nếu chưa có dữ liệu thì trả về mẫu rỗng."""
     return _get_quality_form(
         lot_code,
         form_table="lot_bavia_forms",
@@ -1206,7 +1371,7 @@ def get_lot_bavia(lot_code: str) -> dict[str, Any] | None:
 
 
 def save_lot_bavia(lot_code: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """L?u to?n b? form Bavia theo l?."""
+    """Lưu toàn bộ form Bavia theo lô."""
     return _save_quality_form(
         lot_code,
         payload,
@@ -1220,94 +1385,25 @@ def save_lot_bavia(lot_code: str, payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def get_lot_bavia_work(lot_code: str) -> dict[str, Any] | None:
-    """Lấy form nhập sản lượng Bavia theo lô."""
+
+def get_bavia_work_rows(lot_code: str) -> list[dict[str, Any]]:
+    """Lấy các dòng máy thực hiện / chuyển máy của Bavia theo lô."""
     with connect() as conn:
-        lot = conn.execute("SELECT * FROM lots WHERE lot_code = ?", (lot_code,)).fetchone()
-        if not lot:
-            return None
-        last_output = get_lot_last_output(conn, lot_code)
-        form_row = conn.execute(
-            "SELECT work_date FROM lot_bavia_work_forms WHERE lot_code = ?",
-            (lot_code,),
-        ).fetchone()
-        row = conn.execute(
+        return conn.execute(
             """
-            SELECT *
-            FROM lot_bavia_work_rows
-            WHERE lot_code = ?
-            ORDER BY id DESC
-            LIMIT 1
+            SELECT bwr.*,
+                   m.machine_name,
+                   w.worker_name,
+                   tw.worker_name AS tech_name
+            FROM lot_bavia_work_rows bwr
+            LEFT JOIN machines m ON m.machine_code = bwr.machine_code
+            LEFT JOIN workers w ON w.worker_code = bwr.worker_code
+            LEFT JOIN workers tw ON tw.worker_code = bwr.tech_code
+            WHERE bwr.lot_code = ?
+            ORDER BY bwr.line_index
             """,
             (lot_code,),
-        ).fetchone()
-        if not row:
-            row = {
-                "machine_code": "",
-                "worker_code": "",
-                "work_date": "",
-                "shift": "",
-                "qty_ok": 0,
-                "qty_ng": 0,
-                "note": "",
-            }
-        return {
-            "lot": lot,
-            "order": conn.execute("SELECT * FROM orders WHERE order_code = ?", (lot["order_code"],)).fetchone(),
-            "max_qty": int(last_output["max_qty"] or 0),
-            "last_step_form_id": last_output["form_id"],
-            "last_step_name": last_output["step_name"],
-            "last_step_ok": int(last_output["qty_ok"] or 0),
-            "last_step_ng": int(last_output["qty_ng"] or 0),
-            "work_date": (form_row["work_date"] if form_row else "") or "",
-            "row": row,
-        }
-
-
-def save_lot_bavia_work(lot_code: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """Lưu form nhập sản lượng Bavia theo lô."""
-    with connect() as conn:
-        lot = conn.execute("SELECT * FROM lots WHERE lot_code = ?", (lot_code,)).fetchone()
-        if not lot:
-            raise LookupError("Không tìm thấy lô")
-        last_output = get_lot_last_output(conn, lot_code)
-        max_qty = int(last_output["max_qty"] or 0)
-        work_date = str(payload.get("work_date") or "").strip()
-        row = dict(payload.get("row") or {})
-        qty_ok = int(row.get("qty_ok") or 0)
-        qty_ng = int(row.get("qty_ng") or 0)
-        total = qty_ok + qty_ng
-        if max_qty and total > max_qty:
-            raise ValueError(f"Tổng OK + NG không được vượt quá số lượng tối đa {max_qty}")
-        conn.execute(
-            """
-            INSERT INTO lot_bavia_work_forms(lot_code, max_qty, work_date, updated_at)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(lot_code) DO UPDATE SET
-              max_qty = excluded.max_qty,
-              work_date = excluded.work_date,
-              updated_at = CURRENT_TIMESTAMP
-            """,
-            (lot_code, max_qty, work_date),
-        )
-        conn.execute("DELETE FROM lot_bavia_work_rows WHERE lot_code = ?", (lot_code,))
-        conn.execute(
-            """
-            INSERT INTO lot_bavia_work_rows(lot_code, machine_code, worker_code, work_date, shift, qty_ok, qty_ng, note)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                lot_code,
-                str(row.get("machine_code") or "").strip(),
-                str(row.get("worker_code") or "").strip(),
-                str(row.get("work_date") or work_date or "").strip(),
-                str(row.get("shift") or "").strip(),
-                qty_ok,
-                qty_ng,
-                str(row.get("note") or "").strip(),
-            ),
-        )
-    return get_lot_bavia_work(lot_code) or {"lot_code": lot_code, "max_qty": max_qty, "row": row}
+        ).fetchall()
 
 
 def get_lot_bavia_work(lot_code: str) -> dict[str, Any] | None:
@@ -1317,30 +1413,6 @@ def get_lot_bavia_work(lot_code: str) -> dict[str, Any] | None:
         if not lot:
             return None
         last_output = get_lot_last_output(conn, lot_code)
-        form_row = conn.execute(
-            "SELECT work_date FROM lot_bavia_work_forms WHERE lot_code = ?",
-            (lot_code,),
-        ).fetchone()
-        row = conn.execute(
-            """
-            SELECT *
-            FROM lot_bavia_work_rows
-            WHERE lot_code = ?
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            (lot_code,),
-        ).fetchone()
-        if not row:
-            row = {
-                "machine_code": "",
-                "worker_code": "",
-                "work_date": "",
-                "shift": "",
-                "qty_ok": 0,
-                "qty_ng": 0,
-                "note": "",
-            }
         return {
             "lot": lot,
             "order": conn.execute("SELECT * FROM orders WHERE order_code = ?", (lot["order_code"],)).fetchone(),
@@ -1349,54 +1421,116 @@ def get_lot_bavia_work(lot_code: str) -> dict[str, Any] | None:
             "last_step_name": last_output["step_name"],
             "last_step_ok": int(last_output["qty_ok"] or 0),
             "last_step_ng": int(last_output["qty_ng"] or 0),
-            "work_date": (form_row["work_date"] if form_row else "") or "",
-            "row": row,
+            "rows": get_bavia_work_rows(lot_code),
         }
 
 
-def save_lot_bavia_work(lot_code: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """Lưu form nhập sản lượng Bavia theo lô, đồng thời lưu max_qty = OK + NG."""
+def recalc_bavia_work_form(conn: sqlite3.Connection, lot_code: str) -> None:
+    """Tính tổng OK/NG từ lot_bavia_work_rows và cập nhật max_qty của form Bavia work."""
+    lot = conn.execute("SELECT * FROM lots WHERE lot_code = ?", (lot_code,)).fetchone()
+    if not lot:
+        raise LookupError("Không tìm thấy lô")
+    totals = conn.execute(
+        """
+        SELECT COALESCE(SUM(qty_ok), 0) AS qty_ok, COALESCE(SUM(qty_ng), 0) AS qty_ng
+        FROM lot_bavia_work_rows
+        WHERE lot_code = ?
+        """,
+        (lot_code,),
+    ).fetchone()
+    total = int(totals["qty_ok"] or 0) + int(totals["qty_ng"] or 0)
+    qty_per_lot = int(lot["qty_per_lot"] or 0)
+    if qty_per_lot and total > qty_per_lot:
+        raise ValueError(f"Tổng OK + NG vượt quá số lượng lô ({qty_per_lot} cái)")
+    conn.execute(
+        """
+        INSERT INTO lot_bavia_work_forms(lot_code, max_qty, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(lot_code) DO UPDATE SET
+          max_qty = excluded.max_qty,
+          updated_at = CURRENT_TIMESTAMP
+        """,
+        (lot_code, total),
+    )
+
+
+def create_bavia_work_row(lot_code: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Thêm một dòng máy/chuyển máy mới cho Bavia của lô."""
     with connect() as conn:
-        lot = conn.execute("SELECT * FROM lots WHERE lot_code = ?", (lot_code,)).fetchone()
-        if not lot:
+        if not conn.execute("SELECT 1 FROM lots WHERE lot_code = ?", (lot_code,)).fetchone():
             raise LookupError("Không tìm thấy lô")
-        work_date = str(payload.get("work_date") or "").strip()
-        row = dict(payload.get("row") or {})
-        qty_ok = int(row.get("qty_ok") or 0)
-        qty_ng = int(row.get("qty_ng") or 0)
-        total = qty_ok + qty_ng
-        max_qty = int(lot["qty_per_lot"] or 0)
-        if max_qty and total > max_qty:
-            raise ValueError(f"Tổng OK + NG không được vượt quá số lượng tối đa {max_qty}")
+        validate_machine_log_refs(conn, payload["machine_code"], payload["worker_code"], payload.get("tech_code") or "")
         conn.execute(
             """
-            INSERT INTO lot_bavia_work_forms(lot_code, max_qty, work_date, updated_at)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(lot_code) DO UPDATE SET
-              max_qty = excluded.max_qty,
-              work_date = excluded.work_date,
-              updated_at = CURRENT_TIMESTAMP
+            INSERT INTO lot_bavia_work_forms(lot_code, updated_at)
+            VALUES (?, CURRENT_TIMESTAMP)
+            ON CONFLICT(lot_code) DO NOTHING
             """,
-            (lot_code, total, work_date),
+            (lot_code,),
         )
-        conn.execute("DELETE FROM lot_bavia_work_rows WHERE lot_code = ?", (lot_code,))
+        next_index = conn.execute(
+            "SELECT COALESCE(MAX(line_index), 0) + 1 AS next_index FROM lot_bavia_work_rows WHERE lot_code = ?",
+            (lot_code,),
+        ).fetchone()["next_index"]
         conn.execute(
             """
-            INSERT INTO lot_bavia_work_rows(lot_code, machine_code, worker_code, work_date, shift, qty_ok, qty_ng, note)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO lot_bavia_work_rows(lot_code, line_index, machine_code, worker_code, tech_code, work_date, shift, qty_ok, qty_ng)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 lot_code,
-                str(row.get("machine_code") or "").strip(),
-                str(row.get("worker_code") or "").strip(),
-                str(row.get("work_date") or work_date or "").strip(),
-                str(row.get("shift") or "").strip(),
-                qty_ok,
-                qty_ng,
-                str(row.get("note") or "").strip(),
+                next_index,
+                payload["machine_code"],
+                payload["worker_code"],
+                payload.get("tech_code") or "",
+                payload.get("work_date"),
+                payload.get("shift") or "",
+                int(payload.get("qty_ok") or 0),
+                int(payload.get("qty_ng") or 0),
             ),
         )
-    return get_lot_bavia_work(lot_code) or {"lot_code": lot_code, "max_qty": total, "row": row}
+        recalc_bavia_work_form(conn, lot_code)
+    return {"line_index": next_index, **payload}
+
+
+def update_bavia_work_row(lot_code: str, line_index: int, payload: dict[str, Any]) -> dict[str, Any]:
+    """Cập nhật một dòng máy của Bavia."""
+    with connect() as conn:
+        validate_machine_log_refs(conn, payload["machine_code"], payload["worker_code"], payload.get("tech_code") or "")
+        cur = conn.execute(
+            """
+            UPDATE lot_bavia_work_rows
+            SET machine_code = ?, worker_code = ?, tech_code = ?, work_date = ?, shift = ?, qty_ok = ?, qty_ng = ?
+            WHERE lot_code = ? AND line_index = ?
+            """,
+            (
+                payload["machine_code"],
+                payload["worker_code"],
+                payload.get("tech_code") or "",
+                payload.get("work_date"),
+                payload.get("shift") or "",
+                int(payload.get("qty_ok") or 0),
+                int(payload.get("qty_ng") or 0),
+                lot_code,
+                line_index,
+            ),
+        )
+        if cur.rowcount == 0:
+            raise LookupError("Không tìm thấy dòng máy")
+        recalc_bavia_work_form(conn, lot_code)
+    return {"line_index": line_index, **payload}
+
+
+def delete_bavia_work_row(lot_code: str, line_index: int) -> None:
+    """Xóa một dòng máy của Bavia."""
+    with connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM lot_bavia_work_rows WHERE lot_code = ? AND line_index = ?",
+            (lot_code, line_index),
+        )
+        if cur.rowcount == 0:
+            raise LookupError("Không tìm thấy dòng máy")
+        recalc_bavia_work_form(conn, lot_code)
 
 
 def get_entry(form_id: str) -> dict[str, Any] | None:
@@ -1442,7 +1576,8 @@ def recalc_entry_from_machine_logs(conn: sqlite3.Connection, form_id: str) -> di
     totals = conn.execute(
         """
         SELECT COALESCE(SUM(qty_ok), 0) AS qty_ok,
-               COALESCE(SUM(qty_ng), 0) AS qty_ng
+               COALESCE(SUM(qty_ng), 0) AS qty_ng,
+               COUNT(*) AS row_count
         FROM step_machine_logs
         WHERE form_id = ?
         """,
@@ -1450,11 +1585,12 @@ def recalc_entry_from_machine_logs(conn: sqlite3.Connection, form_id: str) -> di
     ).fetchone()
     qty_ok = int(totals["qty_ok"] or 0)
     qty_ng = int(totals["qty_ng"] or 0)
+    row_count = int(totals["row_count"] or 0)
     qty_per_lot = int(lot["qty_per_lot"])
     total = qty_ok + qty_ng
     if total > qty_per_lot:
         raise ValueError(f"Tổng OK + NG vượt quá số lượng lô ({qty_per_lot} cái)")
-    status = "todo" if total == 0 else "partial" if total < qty_per_lot else "done"
+    status = "todo" if row_count == 0 else "partial" if total < qty_per_lot else "done"
     conn.execute(
         """
         UPDATE step_entries
@@ -1609,82 +1745,177 @@ def update_entry(form_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     return get_entry(form_id) or entry
 
 
-def get_summary_report() -> list[dict[str, Any]]:
-    """Báo cáo tổng quan theo đơn hàng: hoàn thành, OK/NG và tỷ lệ NG."""
+def get_summary_report(date_from: str | None = None, date_to: str | None = None) -> list[dict[str, Any]]:
+    """Báo cáo tổng quan theo đơn hàng: hoàn thành, OK/NG, đã vào kho và tỷ lệ NG."""
     with connect() as conn:
-        orders = conn.execute("SELECT * FROM orders ORDER BY created_at DESC, id DESC").fetchall()
-        for order in orders:
-            totals = conn.execute(
-                """
-                SELECT COALESCE(SUM(se.qty_ok), 0) AS total_ok,
-                       COALESCE(SUM(se.qty_ng), 0) AS total_ng
-                FROM step_entries se
-                JOIN lots l ON l.lot_code = se.lot_code
-                WHERE l.order_code = ?
-                """,
-                (order["order_code"],),
-            ).fetchone()
-            lots_done = conn.execute(
-                """
-                SELECT COUNT(*) AS count_done
-                FROM lots l
-                WHERE l.order_code = ?
-                  AND EXISTS (SELECT 1 FROM step_entries se WHERE se.lot_code = l.lot_code)
-                  AND NOT EXISTS (
-                    SELECT 1 FROM step_entries se
-                    WHERE se.lot_code = l.lot_code AND se.status != 'done'
-                  )
-                """,
-                (order["order_code"],),
-            ).fetchone()
-            total_ok = totals["total_ok"] or 0
-            total_ng = totals["total_ng"] or 0
-            inspected = total_ok + total_ng
-            order["lots_done"] = lots_done["count_done"] or 0
-            order["total_ok"] = total_ok
-            order["total_ng"] = total_ng
-            order["ng_rate"] = round(total_ng * 100 / inspected, 2) if inspected else 0
-        return orders
+        where_clause = ""
+        params: list[Any] = []
+        effective_date_expr = "COALESCE(NULLIF(order_receive_date, ''), substr(created_at, 1, 10))"
+        if date_from:
+            where_clause += f" AND {effective_date_expr} >= ?"
+            params.append(date_from)
+        if date_to:
+            where_clause += f" AND {effective_date_expr} <= ?"
+            params.append(date_to)
+        return conn.execute(
+            f"""
+            WITH filtered_orders AS (
+              SELECT order_code, part_code, total_qty, qty_per_lot, planned_lots, total_lots, created_at
+              FROM orders
+              WHERE 1=1{where_clause}
+            ),
+            lot_stats AS (
+              SELECT l.order_code,
+                     l.lot_code,
+                     COALESCE(se.total_entries, 0) AS total_entries,
+                     COALESCE(se.not_done_entries, 0) AS not_done_entries
+              FROM lots l
+              LEFT JOIN (
+                SELECT lot_code,
+                       COUNT(*) AS total_entries,
+                       COALESCE(SUM(CASE WHEN status != 'done' THEN 1 ELSE 0 END), 0) AS not_done_entries
+                FROM step_entries
+                GROUP BY lot_code
+              ) se ON se.lot_code = l.lot_code
+            ),
+            lot_done AS (
+              SELECT order_code, COUNT(*) AS lots_done
+              FROM lot_stats
+              WHERE total_entries > 0 AND not_done_entries = 0
+              GROUP BY order_code
+            ),
+            entry_stats AS (
+              SELECT fo.order_code,
+                     COALESCE(SUM(se.qty_ok), 0) AS total_ok,
+                     COALESCE(SUM(se.qty_ng), 0) AS total_ng
+              FROM filtered_orders fo
+              JOIN lots l ON l.order_code = fo.order_code
+              JOIN step_entries se ON se.lot_code = l.lot_code
+              GROUP BY fo.order_code
+            ),
+            receipt_stats AS (
+              SELECT l.order_code,
+                     COALESCE(SUM(r.qty), 0) AS total_receipted
+              FROM lot_warehouse_receipts r
+              JOIN lots l ON l.lot_code = r.lot_code
+              GROUP BY l.order_code
+            )
+            SELECT fo.*,
+                   COALESCE(ld.lots_done, 0) AS lots_done,
+                   COALESCE(es.total_ok, 0) AS total_ok,
+                   COALESCE(es.total_ng, 0) AS total_ng,
+                   COALESCE(rs.total_receipted, 0) AS total_receipted,
+                   ROUND(
+                     CASE
+                       WHEN COALESCE(es.total_ok, 0) + COALESCE(es.total_ng, 0) > 0
+                       THEN COALESCE(es.total_ng, 0) * 100.0 / (COALESCE(es.total_ok, 0) + COALESCE(es.total_ng, 0))
+                       ELSE 0
+                     END,
+                     2
+                   ) AS ng_rate
+            FROM filtered_orders fo
+            LEFT JOIN lot_done ld ON ld.order_code = fo.order_code
+            LEFT JOIN entry_stats es ON es.order_code = fo.order_code
+            LEFT JOIN receipt_stats rs ON rs.order_code = fo.order_code
+            ORDER BY fo.created_at DESC, fo.order_code DESC
+            """,
+            params,
+        ).fetchall()
 
 
-def get_order_report(order_code: str) -> list[dict[str, Any]]:
+def get_order_report(order_code: str, date_from: str | None = None, date_to: str | None = None) -> list[dict[str, Any]]:
     """Báo cáo chi tiết từng lô/công đoạn của một đơn hàng."""
     with connect() as conn:
         return conn.execute(
-            """
+            f"""
+            WITH machine_first AS (
+              SELECT form_id, work_date, shift
+              FROM (
+                SELECT form_id, work_date, shift,
+                       ROW_NUMBER() OVER (PARTITION BY form_id ORDER BY line_index) AS rn
+                FROM step_machine_logs
+                WHERE COALESCE(work_date, '') != '' OR COALESCE(shift, '') != ''
+              )
+              WHERE rn = 1
+            ),
+            machine_usage AS (
+              SELECT form_id,
+                     GROUP_CONCAT(machine_text, ', ') AS machines_used
+              FROM (
+                SELECT form_id,
+                       machine_code || ' (' || SUM(qty_ok + qty_ng) || ')' AS machine_text
+                FROM step_machine_logs
+                GROUP BY form_id, machine_code
+                ORDER BY form_id, machine_code
+              )
+              GROUP BY form_id
+            )
             SELECT l.lot_code, l.qty_per_lot, l.lot_index, se.step_name, se.form_id,
                    se.status, se.qty_ok, se.qty_ng, se.worker_name, se.tech_name,
-                   COALESCE((
-                     SELECT sml.work_date
-                     FROM step_machine_logs sml
-                     WHERE sml.form_id = se.form_id AND COALESCE(sml.work_date, '') != ''
-                     ORDER BY sml.line_index
-                     LIMIT 1
-                   ), se.work_date, '') AS work_date,
-                   COALESCE((
-                     SELECT sml.shift
-                     FROM step_machine_logs sml
-                     WHERE sml.form_id = se.form_id AND COALESCE(sml.shift, '') != ''
-                     ORDER BY sml.line_index
-                     LIMIT 1
-                   ), se.shift, '') AS shift,
-                   COALESCE((
-                     SELECT GROUP_CONCAT(machine_text, ', ')
-                     FROM (
-                       SELECT sml.machine_code || ' (' || SUM(sml.qty_ok + sml.qty_ng) || ')' AS machine_text
-                       FROM step_machine_logs sml
-                       WHERE sml.form_id = se.form_id
-                       GROUP BY sml.machine_code
-                       ORDER BY sml.machine_code
-                     )
-                   ), '') AS machines_used
+                   COALESCE(mf.work_date, se.work_date, '') AS work_date,
+                   COALESCE(mf.shift, se.shift, '') AS shift,
+                   COALESCE(mu.machines_used, '') AS machines_used
             FROM lots l
             LEFT JOIN step_entries se ON se.lot_code = l.lot_code
+            LEFT JOIN machine_first mf ON mf.form_id = se.form_id
+            LEFT JOIN machine_usage mu ON mu.form_id = se.form_id
             WHERE l.order_code = ?
+            {f" AND COALESCE(NULLIF(se.work_date, ''), NULLIF(mf.work_date, ''), '') >= ?" if date_from else ""}
+            {f" AND COALESCE(NULLIF(se.work_date, ''), NULLIF(mf.work_date, ''), '') <= ?" if date_to else ""}
             ORDER BY l.lot_index, se.id
             """,
-            (order_code,),
+            [order_code] + ([date_from] if date_from else []) + ([date_to] if date_to else []),
         ).fetchall()
+
+
+def get_machine_efficiency_report(date_from: str | None = None, date_to: str | None = None) -> list[dict[str, Any]]:
+    """Báo cáo hiệu suất máy theo công thức cycle time * sản lượng / 11 giờ."""
+    with connect() as conn:
+        where_clause = ""
+        params: list[Any] = []
+        if date_from:
+            where_clause += " WHERE DATE(COALESCE(NULLIF(sml.work_date, ''), NULLIF(se.work_date, ''), sml.created_at)) >= ?"
+            params.append(date_from)
+        if date_to:
+            where_clause += " AND DATE(COALESCE(NULLIF(sml.work_date, ''), NULLIF(se.work_date, ''), sml.created_at)) <= ?" if where_clause else " WHERE DATE(COALESCE(NULLIF(sml.work_date, ''), NULLIF(se.work_date, ''), sml.created_at)) <= ?"
+            params.append(date_to)
+        rows = conn.execute(
+            f"""
+            SELECT
+              sml.machine_code,
+              COALESCE(m.machine_name, sml.machine_code) AS machine_name,
+              COUNT(*) AS log_count,
+              COUNT(DISTINCT se.lot_code) AS lot_count,
+              COUNT(DISTINCT l.order_code) AS order_count,
+              COALESCE(SUM(sml.qty_ok + sml.qty_ng), 0) AS total_qty,
+              COALESCE(SUM(COALESCE(ps.cycle_time_seconds, 0) * (sml.qty_ok + sml.qty_ng)), 0) AS total_cycle_seconds
+            FROM step_machine_logs sml
+            JOIN step_entries se ON se.form_id = sml.form_id
+            JOIN lots l ON l.lot_code = se.lot_code
+            LEFT JOIN machines m ON m.machine_code = sml.machine_code
+            LEFT JOIN parts p ON p.part_code = l.part_code
+            LEFT JOIN part_steps ps ON ps.part_id = p.id AND TRIM(UPPER(ps.step_name)) = TRIM(UPPER(se.step_name))
+            {where_clause}
+            GROUP BY sml.machine_code, m.machine_name
+            ORDER BY total_cycle_seconds DESC, total_qty DESC, sml.machine_code
+            """,
+            params,
+        ).fetchall()
+        result = []
+        for row in rows:
+            total_cycle_seconds = float(row["total_cycle_seconds"] or 0)
+            efficiency_percent = round(total_cycle_seconds * 100 / (11 * 3600), 2) if total_cycle_seconds else 0
+            result.append({
+                "machine_code": row["machine_code"],
+                "machine_name": row["machine_name"],
+                "log_count": int(row["log_count"] or 0),
+                "lot_count": int(row["lot_count"] or 0),
+                "order_count": int(row["order_count"] or 0),
+                "total_qty": int(row["total_qty"] or 0),
+                "total_cycle_seconds": total_cycle_seconds,
+                "efficiency_percent": efficiency_percent,
+            })
+        return result
 
 
 def get_lot_warehouse(lot_code: str) -> dict[str, Any] | None:
@@ -1805,3 +2036,188 @@ def save_lot_warehouse(lot_code: str, payload: dict[str, Any]) -> dict[str, Any]
                 ),
             )
     return get_lot_warehouse(lot_code) or {"lot_code": lot_code, "max_qty": source_max, "rows": cleaned_rows}
+
+
+# ─── Kho thành phẩm mới (phiếu nhập kho) ────────────────────────────────────
+
+def _get_lot_warehouse_eligible(conn: sqlite3.Connection, lot_code: str) -> dict[str, Any]:
+    """Số lượng tối đa có thể nhập kho — theo OK công đoạn cuối (cùng logic form kho trên lô)."""
+    last_output = get_lot_last_output(conn, lot_code)
+    return {
+        "eligible_qty": int(last_output["qty_ok"] or 0),
+        "last_step_name": str(last_output.get("step_name") or "").strip(),
+    }
+
+
+def get_warehouse_orders_summary(search: str = "") -> list[dict[str, Any]]:
+    """Danh sách đơn hàng kèm tổng SL được nhập kho và đã nhập kho (trang chủ kho)."""
+    with connect() as conn:
+        where_clause = ""
+        params: list[Any] = []
+        if search:
+            like = f"%{search.upper()}%"
+            where_clause = "WHERE UPPER(o.order_code) LIKE ? OR UPPER(o.part_code) LIKE ?"
+            params = [like, like]
+        return conn.execute(
+            f"""
+            WITH lot_last AS (
+              SELECT lot_code, order_code, qty_ok AS eligible_qty
+              FROM (
+                SELECT l.order_code,
+                       se.lot_code,
+                       se.qty_ok,
+                       ROW_NUMBER() OVER (PARTITION BY se.lot_code ORDER BY se.id DESC) AS rn
+                FROM step_entries se
+                JOIN lots l ON l.lot_code = se.lot_code
+              )
+              WHERE rn = 1
+            ),
+            eligible_by_order AS (
+              SELECT order_code, COALESCE(SUM(eligible_qty), 0) AS total_eligible
+              FROM lot_last
+              GROUP BY order_code
+            ),
+            receipt_by_order AS (
+              SELECT l.order_code, COALESCE(SUM(r.qty), 0) AS total_receipted
+              FROM lot_warehouse_receipts r
+              JOIN lots l ON l.lot_code = r.lot_code
+              GROUP BY l.order_code
+            )
+            SELECT o.order_code,
+                   o.part_code,
+                   o.total_lots,
+                   o.total_qty,
+                   COALESCE(e.total_eligible, 0) AS total_eligible,
+                   COALESCE(r.total_receipted, 0) AS total_receipted
+            FROM orders o
+            LEFT JOIN eligible_by_order e ON e.order_code = o.order_code
+            LEFT JOIN receipt_by_order r ON r.order_code = o.order_code
+            {where_clause}
+            ORDER BY o.order_code DESC
+            """,
+            params,
+        ).fetchall()
+
+
+def get_warehouse_order_detail(order_code: str) -> dict[str, Any]:
+    """Chi tiết một đơn kho thành phẩm kèm danh sách lô."""
+    with connect() as conn:
+        order = conn.execute(
+            "SELECT order_code, part_code, total_qty, total_lots FROM orders WHERE order_code = ?",
+            (order_code.upper(),),
+        ).fetchone()
+        if not order:
+            raise LookupError("Không tìm thấy đơn hàng")
+        lot_detail_rows = conn.execute(
+            """
+            WITH lot_last AS (
+              SELECT lot_code, eligible_qty, last_step_name
+              FROM (
+                SELECT l.lot_code,
+                       COALESCE(se.qty_ok, 0) AS eligible_qty,
+                       se.step_name AS last_step_name,
+                       ROW_NUMBER() OVER (PARTITION BY se.lot_code ORDER BY se.id DESC) AS rn
+                FROM lots l
+                LEFT JOIN step_entries se ON se.lot_code = l.lot_code
+                WHERE l.order_code = ?
+              )
+              WHERE rn = 1 OR rn IS NULL
+            ),
+            receipt_by_lot AS (
+              SELECT lot_code, COALESCE(SUM(qty), 0) AS total_receipted
+              FROM lot_warehouse_receipts
+              GROUP BY lot_code
+            )
+            SELECT l.lot_code,
+                   l.part_code,
+                   l.qty_per_lot,
+                   l.lot_index,
+                   COALESCE(ll.eligible_qty, 0) AS eligible_qty,
+                   COALESCE(rb.total_receipted, 0) AS total_receipted,
+                   COALESCE(ll.last_step_name, '') AS last_step_name
+            FROM lots l
+            LEFT JOIN lot_last ll ON ll.lot_code = l.lot_code
+            LEFT JOIN receipt_by_lot rb ON rb.lot_code = l.lot_code
+            WHERE l.order_code = ?
+            ORDER BY l.lot_index
+            """,
+            (order_code.upper(), order_code.upper()),
+        ).fetchall()
+        receipts = conn.execute(
+            """
+            SELECT r.lot_code, r.id, r.qty, r.receipt_date, r.note, r.created_at
+            FROM lot_warehouse_receipts r
+            JOIN lots l ON l.lot_code = r.lot_code
+            WHERE l.order_code = ?
+            ORDER BY l.lot_index, r.id
+            """,
+            (order_code.upper(),),
+        ).fetchall()
+        receipt_map: dict[str, list[dict[str, Any]]] = {}
+        for receipt in receipts:
+            receipt_map.setdefault(receipt["lot_code"], []).append(dict(receipt))
+        lot_detail: list[dict[str, Any]] = []
+        total_receipted = 0
+        for lot_row in lot_detail_rows:
+            receipted = int(lot_row["total_receipted"] or 0)
+            total_receipted += receipted
+            lot_detail.append({
+                "lot_code": lot_row["lot_code"],
+                "part_code": lot_row["part_code"],
+                "qty_per_lot": int(lot_row["qty_per_lot"] or 0),
+                "eligible_qty": int(lot_row["eligible_qty"] or 0),
+                "total_receipted": receipted,
+                "remaining_qty": max(int(lot_row["eligible_qty"] or 0) - receipted, 0),
+                "last_step_name": lot_row["last_step_name"],
+                "receipts": receipt_map.get(lot_row["lot_code"], []),
+            })
+        return {
+            "order_code": order["order_code"],
+            "part_code": order["part_code"],
+            "total_qty": order["total_qty"],
+            "total_lots": order["total_lots"],
+            "total_receipted": total_receipted,
+            "progress_percent": round((total_receipted / float(order["total_qty"] or 0)) * 100) if float(order["total_qty"] or 0) > 0 else 0,
+            "lots": lot_detail,
+        }
+
+
+def add_warehouse_receipt(lot_code: str, qty: int, receipt_date: str, note: str = "") -> dict[str, Any]:
+    """Thêm phiếu nhập kho. Kiểm tra không vượt SL OK công đoạn cuối."""
+    with connect() as conn:
+        lot = conn.execute("SELECT 1 FROM lots WHERE lot_code = ?", (lot_code,)).fetchone()
+        if not lot:
+            raise LookupError("Không tìm thấy lô")
+        if qty <= 0:
+            raise ValueError("Số lượng nhập kho phải lớn hơn 0")
+        eligible_qty = _get_lot_warehouse_eligible(conn, lot_code)["eligible_qty"]
+        total_receipted = conn.execute(
+            "SELECT COALESCE(SUM(qty), 0) AS total FROM lot_warehouse_receipts WHERE lot_code = ?",
+            (lot_code,),
+        ).fetchone()["total"]
+        if eligible_qty <= 0:
+            raise ValueError("Lô chưa có số lượng OK từ công đoạn cuối, chưa thể nhập kho")
+        if (int(total_receipted) + qty) > eligible_qty:
+            raise ValueError(
+                f"Tổng nhập kho ({int(total_receipted) + qty}) vượt quá số lượng được phép ({eligible_qty})"
+            )
+        conn.execute(
+            "INSERT INTO lot_warehouse_receipts(lot_code, qty, receipt_date, note) VALUES (?, ?, ?, ?)",
+            (lot_code, qty, receipt_date.strip(), note.strip()),
+        )
+        row = conn.execute(
+            "SELECT * FROM lot_warehouse_receipts WHERE lot_code = ? ORDER BY id DESC LIMIT 1",
+            (lot_code,),
+        ).fetchone()
+        return dict(row)
+
+
+def delete_warehouse_receipt(lot_code: str, receipt_id: int) -> None:
+    """Xóa phiếu nhập kho."""
+    with connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM lot_warehouse_receipts WHERE id = ? AND lot_code = ?",
+            (receipt_id, lot_code),
+        )
+        if cur.rowcount == 0:
+            raise LookupError("Không tìm thấy phiếu nhập kho")

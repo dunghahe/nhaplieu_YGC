@@ -1,10 +1,10 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
-ShiftName = Literal["", "KÍP 1", "KÍP 2", "KÍP 3", "TĂNG CA"]
+ShiftName = Literal["", "KÍP 1", "KÍP 2", "TĂNG CA"]
 
 
 class PartStepInput(BaseModel):
@@ -81,6 +81,7 @@ class EntryUpdate(BaseModel):
     shift: ShiftName = ""
     qty_ok: int = Field(0, ge=0)
     qty_ng: int = Field(0, ge=0)
+    
     tech_name: str = ""
     worker_name: str = ""
 
@@ -218,28 +219,21 @@ class LotBaviaSaveInput(BaseModel):
     rows: list[LotBaviaRowInput] = Field(default_factory=list)
 
 
-class LotBaviaWorkInput(BaseModel):
-    """Một dòng nhập sản lượng của Bavia."""
+class LotBaviaWorkRowInput(BaseModel):
+    """Một dòng máy thực hiện / chuyển máy của Bavia (giống step machine log, không có ghi chú)."""
 
-    machine_code: str = ""
-    worker_code: str = ""
+    machine_code: str = Field(..., min_length=1, max_length=80)
+    worker_code: str = Field(..., min_length=1, max_length=80)
+    tech_code: str = ""
     work_date: date | None = None
-    shift: str = ""
+    shift: ShiftName = ""
     qty_ok: int = Field(0, ge=0)
     qty_ng: int = Field(0, ge=0)
-    note: str = ""
 
-    @field_validator("machine_code", "worker_code", "shift", "note")
+    @field_validator("machine_code", "worker_code", "tech_code")
     @classmethod
-    def clean_work_text(cls, value: str) -> str:
-        return value.strip()
-
-
-class LotBaviaWorkSaveInput(BaseModel):
-    """Payload lưu form nhập sản lượng Bavia."""
-
-    work_date: date | None = None
-    row: LotBaviaWorkInput | None = None
+    def normalize_bavia_work_codes(cls, value: str) -> str:
+        return value.strip().upper()
 
 
 class LotWarehouseRowInput(BaseModel):
@@ -264,6 +258,19 @@ class LotWarehouseSaveInput(BaseModel):
     rows: list[LotWarehouseRowInput] = Field(default_factory=list)
 
 
+class WarehouseReceiptInput(BaseModel):
+    """Payload thêm phiếu nhập kho thành phẩm."""
+
+    qty: int = Field(..., gt=0)
+    receipt_date: date | None = None
+    note: str = ""
+
+    @field_validator("note")
+    @classmethod
+    def clean_note(cls, value: str) -> str:
+        return value.strip()
+
+
 class ApiMessage(BaseModel):
     """Response đơn giản cho các API chỉ cần trả thông báo."""
 
@@ -284,3 +291,22 @@ class PartStepUpdateInput(BaseModel):
     @classmethod
     def clean_step_name(cls, value: str) -> str:
         return value.strip().upper()
+
+
+class LotPrintRangeInput(BaseModel):
+    """Payload chọn khoảng lô để in hàng loạt."""
+
+    start_index: int = Field(..., gt=0)
+    end_index: int = Field(..., gt=0)
+
+
+class LotBlankReceiptSaveInput(BaseModel):
+    """Payload luu thong tin nhan phoi cho mot lo."""
+
+    received_by: str = Field(..., min_length=1, max_length=160)
+    received_at: datetime
+
+    @field_validator("received_by")
+    @classmethod
+    def clean_received_by(cls, value: str) -> str:
+        return value.strip()

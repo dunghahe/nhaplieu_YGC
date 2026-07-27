@@ -13,7 +13,8 @@ from models import (
     DeleteRequest,
     EntryUpdate,
     LotBaviaSaveInput,
-    LotBaviaWorkSaveInput,
+    LotBaviaWorkRowInput,
+    LotBlankReceiptSaveInput,
     LotQcSaveInput,
     LotWarehouseSaveInput,
     MachineCreate,
@@ -21,7 +22,9 @@ from models import (
     OrderCreate,
     PartCreate,
     PartStepUpdateInput,
+    LotPrintRangeInput,
     StepMachineLogInput,
+    WarehouseReceiptInput,
     WorkerCreate,
     WorkerUpdate,
 )
@@ -40,7 +43,7 @@ def verify_delete_code(payload: DeleteRequest) -> None:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -56,9 +59,19 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 @app.get("/")
-def home() -> FileResponse:
+def home() -> Response:
     """Trang Single Page App."""
-    return FileResponse("static/index.html")
+    with open("static/index.html", "rb") as f:
+        content = f.read()
+    return Response(
+        content=content,
+        media_type="text/html",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0"
+        }
+    )
 
 
 @app.get("/api/qr")
@@ -148,12 +161,36 @@ def api_get_orders():
 @app.get("/api/orders/{order_code}")
 def api_get_order(order_code: str):
     """Lay chi tiet mot don hang de fill form va in bieu lo."""
-    order = database.get_order(order_code.upper())
+    order = database.get_order_with_lots(order_code.upper())
     if not order:
         raise HTTPException(status_code=404, detail="Khong tim thay don hang")
     return order
 
 
+@app.post("/api/orders/{order_code}/print-range")
+def api_mark_order_print_range(order_code: str, payload: LotPrintRangeInput):
+    """Đánh dấu một dải lô trong đơn là đã in."""
+    try:
+        return database.mark_order_lots_printed(order_code.upper(), payload.start_index, payload.end_index)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.put("/api/lots/{lot_code}/blank-receipt")
+def api_save_lot_blank_receipt(lot_code: str, payload: LotBlankReceiptSaveInput):
+    """Lưu thông tin nhận phôi cho một lô."""
+    try:
+        return database.save_lot_blank_receipt(
+            lot_code.upper(),
+            payload.received_by,
+            payload.received_at,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 def order_extra_payload(payload: OrderCreate) -> dict:
     """Tách các trường Phần I để lưu vào đơn hàng."""
     data = payload.model_dump()
@@ -278,8 +315,9 @@ def api_import_machines(file: UploadFile = File(...)):
 
 
 @app.delete("/api/machines/{machine_code}")
-def api_delete_machine(machine_code: str):
-    """Soft delete máy CNC bằng cách set inactive."""
+def api_delete_machine(machine_code: str, payload: DeleteRequest):
+    """Soft delete máy CNC bằng cách set inactive (phải khớp delete_code)."""
+    verify_delete_code(payload)
     try:
         database.set_machine_active(machine_code, 0)
         return {"message": "Đã vô hiệu máy"}
@@ -351,8 +389,9 @@ def api_import_workers(file: UploadFile = File(...)):
 
 
 @app.delete("/api/workers/{worker_code}")
-def api_delete_worker(worker_code: str):
-    """Soft delete nhân công bằng cách set inactive."""
+def api_delete_worker(worker_code: str, payload: DeleteRequest):
+    """Soft delete nhân công bằng cách set inactive (phải khớp delete_code)."""
+    verify_delete_code(payload)
     try:
         database.set_worker_active(worker_code, 0)
         return {"message": "Đã vô hiệu nhân công"}
@@ -418,11 +457,34 @@ def api_get_lot_bavia_work(lot_code: str):
     return work
 
 
-@app.put("/api/lots/{lot_code}/bavia-work")
-def api_save_lot_bavia_work(lot_code: str, payload: LotBaviaWorkSaveInput):
-    """Lưu form nhập sản lượng Bavia của lô."""
+@app.post("/api/lots/{lot_code}/bavia-work/rows", status_code=201)
+def api_create_lot_bavia_work_row(lot_code: str, payload: LotBaviaWorkRowInput):
+    """Thêm dòng máy/chuyển máy cho Bavia của lô."""
     try:
-        return database.save_lot_bavia_work(lot_code.upper(), payload.model_dump())
+        return database.create_bavia_work_row(lot_code.upper(), payload.model_dump())
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.put("/api/lots/{lot_code}/bavia-work/rows/{line_index}")
+def api_update_lot_bavia_work_row(lot_code: str, line_index: int, payload: LotBaviaWorkRowInput):
+    """Cập nhật một dòng máy của Bavia."""
+    try:
+        return database.update_bavia_work_row(lot_code.upper(), line_index, payload.model_dump())
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.delete("/api/lots/{lot_code}/bavia-work/rows/{line_index}")
+def api_delete_lot_bavia_work_row(lot_code: str, line_index: int):
+    """Xóa một dòng máy của Bavia."""
+    try:
+        database.delete_bavia_work_row(lot_code.upper(), line_index)
+        return {"message": "Đã xóa dòng máy"}
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -519,12 +581,62 @@ def api_delete_entry_machine(form_id: str, line_index: int):
 
 
 @app.get("/api/reports/summary")
-def api_summary_report():
+def api_summary_report(date_from: str | None = Query(None), date_to: str | None = Query(None)):
     """Báo cáo tổng quan theo đơn hàng."""
-    return database.get_summary_report()
+    return database.get_summary_report(date_from, date_to)
 
 
 @app.get("/api/reports/order/{order_code}")
-def api_order_report(order_code: str):
+def api_order_report(order_code: str, date_from: str | None = Query(None), date_to: str | None = Query(None)):
     """Báo cáo chi tiết từng lô/công đoạn trong đơn hàng."""
-    return database.get_order_report(order_code.upper())
+    return database.get_order_report(order_code.upper(), date_from, date_to)
+
+
+@app.get("/api/reports/machines")
+def api_machine_report(date_from: str | None = Query(None), date_to: str | None = Query(None)):
+    """Báo cáo hiệu suất máy."""
+    return database.get_machine_efficiency_report(date_from, date_to)
+
+
+# ─── API Kho thành phẩm mới ──────────────────────────────────────────────────
+
+@app.get("/api/warehouse/orders")
+def api_warehouse_orders(search: str = Query("")):
+    """Danh sách đơn hàng kèm tiến độ nhập kho (trang chủ kho)."""
+    return database.get_warehouse_orders_summary(search.strip())
+
+
+@app.get("/api/warehouse/orders/{order_code}/detail")
+def api_warehouse_order_detail(order_code: str):
+    """Chi tiết đơn kho thành phẩm kèm danh sách lô."""
+    try:
+        return database.get_warehouse_order_detail(order_code.upper())
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/lots/{lot_code}/warehouse-receipts", status_code=201)
+def api_add_warehouse_receipt(lot_code: str, payload: WarehouseReceiptInput):
+    """Thêm phiếu nhập kho cho lô."""
+    try:
+        return database.add_warehouse_receipt(
+            lot_code.upper(),
+            payload.qty,
+            str(payload.receipt_date or ""),
+            payload.note,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.delete("/api/lots/{lot_code}/warehouse-receipts/{receipt_id}")
+def api_delete_warehouse_receipt(lot_code: str, receipt_id: int, payload: DeleteRequest):
+    """Xóa phiếu nhập kho."""
+    verify_delete_code(payload)
+    try:
+        database.delete_warehouse_receipt(lot_code.upper(), receipt_id)
+        return {"message": "Đã xóa phiếu nhập kho"}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
