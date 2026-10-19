@@ -79,6 +79,100 @@ function escapeHtml(value) {
   }[char]));
 }
 
+function createOrderSearch(inputId, optionsId, onSelect) {
+  const input = $(inputId);
+  const options = $(optionsId);
+  let orders = [];
+  let selectedCode = "";
+  let matches = [];
+  let activeIndex = -1;
+
+  const label = (order) => `${order.order_code} · ${order.part_code}`;
+  const selectedOrder = () => orders.find((order) => order.order_code === selectedCode);
+  const close = (restore = true) => {
+    options.hidden = true;
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-activedescendant");
+    if (restore) input.value = selectedOrder() ? label(selectedOrder()) : "";
+  };
+  const choose = (code) => {
+    if (!orders.some((order) => order.order_code === code)) return;
+    selectedCode = code;
+    close();
+    onSelect(code);
+  };
+  const render = (query = input.value) => {
+    const term = query.trim().toLocaleUpperCase("vi");
+    matches = orders.filter((order) => `${order.order_code} ${order.part_code}`.toLocaleUpperCase("vi").includes(term)).slice(0, 50);
+    activeIndex = -1;
+    options.replaceChildren();
+    if (!matches.length) {
+      const empty = document.createElement("div");
+      empty.className = "order-search-empty";
+      empty.textContent = orders.length ? "Không tìm thấy đơn hàng" : "Chưa có đơn hàng";
+      options.appendChild(empty);
+    } else {
+      matches.forEach((order, index) => {
+        const item = document.createElement("button");
+        item.type = "button";
+        item.id = `${optionsId}-${index}`;
+        item.className = "order-search-option";
+        item.setAttribute("role", "option");
+        item.textContent = label(order);
+        item.addEventListener("mousedown", (event) => event.preventDefault());
+        item.addEventListener("click", () => choose(order.order_code));
+        options.appendChild(item);
+      });
+    }
+    options.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+  };
+  const highlight = (index) => {
+    activeIndex = index;
+    Array.from(options.querySelectorAll(".order-search-option")).forEach((item, itemIndex) => {
+      item.classList.toggle("active", itemIndex === index);
+      item.setAttribute("aria-selected", itemIndex === index ? "true" : "false");
+    });
+    const active = options.children[index];
+    if (active) {
+      input.setAttribute("aria-activedescendant", active.id);
+      active.scrollIntoView({ block: "nearest" });
+    }
+  };
+
+  input.addEventListener("focus", () => {
+    input.select();
+    render("");
+  });
+  input.addEventListener("input", () => render());
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      close();
+      input.blur();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (options.hidden) render("");
+      if (matches.length) highlight((activeIndex + (event.key === "ArrowDown" ? 1 : -1) + matches.length) % matches.length);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      if (!options.hidden && matches.length) choose(matches[activeIndex >= 0 ? activeIndex : 0].order_code);
+    }
+  });
+  input.addEventListener("blur", () => setTimeout(() => close(), 100));
+  return {
+    setOrders(rows, preferredCode = selectedCode) {
+      orders = rows;
+      selectedCode = orders.some((order) => order.order_code === preferredCode) ? preferredCode : "";
+      close();
+      return selectedCode;
+    },
+  };
+}
+
+let lotOrderSearch;
+let reportPoSearch;
+const reportState = { summary: [], machines: [], searchTerm: "", orderCode: "", detailRequestId: 0, loadRequestId: 0 };
+
 function formatDateDisplay(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
@@ -102,7 +196,9 @@ function nowLocalDateTimeInput() {
 }
 
 function today() {
-  return new Date().toISOString().slice(0, 10);
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
 function toast(message, type = "info") {
@@ -182,7 +278,10 @@ function showScreen(screenId) {
       if (state.currentLot?.lot_code) refreshCurrentLot(state.currentLot.lot_code).catch((err) => toast(err.message, "error"));
     });
   }
-  if (screenId === "reportScreen") loadReports();
+  if (screenId === "reportScreen") {
+    showReportList();
+    loadReports().catch((err) => toast(err.message, "error"));
+  }
   if (screenId === "warehouseScreen") showWarehouseList(false);
 }
 
@@ -736,18 +835,13 @@ function wireParts() {
 async function loadOrders() {
   state.orders = await api("/api/orders");
   const previousLotOrder = state.currentLotOrderCode || "";
-  $("reportOrderSelect").innerHTML = state.orders.map((o) => `<option value="${o.order_code}">${o.order_code}</option>`).join("");
-  $("lotOrderSelect").innerHTML = state.orders.map((o) => `<option value="${o.order_code}">${o.order_code} · ${o.part_code}</option>`).join("");
   renderOrdersHistory();
-  const selectedLotOrder = state.orders.some((o) => o.order_code === previousLotOrder)
-    ? previousLotOrder
-    : state.orders[0]?.order_code || "";
+  const selectedLotOrder = lotOrderSearch.setOrders(state.orders, previousLotOrder);
+  state.currentLotOrderCode = selectedLotOrder;
   if (selectedLotOrder) {
-    $("lotOrderSelect").value = selectedLotOrder;
-    state.currentLotOrderCode = selectedLotOrder;
     await renderLotHints(selectedLotOrder);
   } else {
-    $("lotHintGrid").innerHTML = `<div class="text-sm font-semibold text-slate-500">Chưa có đơn hàng</div>`;
+    $("lotHintGrid").innerHTML = `<div class="text-sm font-semibold text-slate-500">${state.orders.length ? "Gõ mã PO hoặc mã hàng để tìm lô" : "Chưa có đơn hàng"}</div>`;
   }
 }
 
@@ -2766,6 +2860,10 @@ async function renderLot(lot) {
 }
 
 function wireLots() {
+  lotOrderSearch = createOrderSearch("lotOrderSelect", "lotOrderOptions", (orderCode) => {
+    state.currentLotOrderCode = orderCode;
+    renderLotHints(orderCode);
+  });
   on("loadLotBtn", "click", () => {
     state.lotSearchClearOnBlur = true;
     loadLot();
@@ -2788,72 +2886,242 @@ function wireLots() {
     if (!btn) return;
     setLotMode(btn.dataset.lotMode);
   });
-  on("lotOrderSelect", "change", (e) => {
-    state.currentLotOrderCode = e.target.value;
-    renderLotHints(e.target.value);
-  });
 }
 
-async function loadReports() {
-  setupReportTables();
-  const qs = reportQueryString();
-  const [summaryRes, machinesRes] = await Promise.all([
-    api(`/api/reports/summary${qs ? `?${qs}` : ""}`),
-    api(`/api/reports/machines${qs ? `?${qs}` : ""}`),
-  ].map((p) => p.catch((err) => ({ __error: err }))));
-  const summary = summaryRes.__error ? [] : summaryRes;
-  const machines = machinesRes.__error ? [] : machinesRes;
-  if (summaryRes.__error) toast(summaryRes.__error.message, "error");
-  if (machinesRes.__error) toast(machinesRes.__error.message, "error");
-  renderReportCards(summary, machines);
-  const select = $("reportOrderSelect");
-  if (select) {
-    const current = select.value;
-    select.innerHTML = summary.length
-      ? summary.map((row) => `<option value="${row.order_code}">${row.order_code} · ${row.part_code}</option>`).join("")
-      : `<option value="">Chưa có đơn hàng</option>`;
-    const nextValue = current && summary.some((row) => row.order_code === current) ? current : (summary[0]?.order_code || "");
-    select.value = nextValue;
-  }
-  $("summaryTable").innerHTML = summary.map((row) => `
+function renderReportSummaryTable() {
+  const term = reportState.searchTerm.toUpperCase();
+  const rows = term
+    ? reportState.summary.filter((row) => row.order_code.toUpperCase().includes(term))
+    : reportState.summary;
+  $("summaryTable").innerHTML = rows.map((row) => `
     <tr class="${row.ng_rate > 5 ? "ng-high" : ""}">
-      <td class="mono font-bold">${escapeHtml(row.order_code || "")}</td>
+      <td class="mono"><button type="button" class="report-po-link" data-report-order="${escapeHtml(row.order_code)}">${escapeHtml(row.order_code)}</button></td>
       <td>${escapeHtml(row.part_code || "")}</td>
       <td class="text-center">${formatQty(row.total_qty)}</td>
-      <td class="text-center">${formatQty(row.total_lots)}</td>
-      <td class="text-center">${formatQty(row.lots_done)}/${formatQty(row.total_lots)}</td>
       <td class="text-center font-bold text-green-700">${formatQty(row.total_ok)}</td>
       <td class="text-center font-bold text-red-700">${formatQty(row.total_ng)}</td>
       <td class="text-center font-bold text-blue-700">${formatQty(row.total_receipted)}</td>
       <td class="text-center">${row.ng_rate}%</td>
       <td class="text-center">${row.ng_rate > 5 ? `<span class="badge error">Cảnh báo NG cao</span>` : `<span class="badge done">Bình thường</span>`}</td>
     </tr>
-  `).join("") || `<tr><td colspan="10" class="text-slate-500">Chưa có dữ liệu</td></tr>`;
-  renderMachineReport(machines);
-  if (select?.value) await loadOrderDetail(select.value);
+  `).join("") || `<tr><td colspan="8" class="text-slate-500">${term ? "Không tìm thấy mã PO trong khoảng ngày đã chọn" : "Chưa có dữ liệu"}</td></tr>`;
 }
 
-async function loadOrderDetail(orderCode) {
-  if (!orderCode) {
-    $("detailTable").innerHTML = `<tr><td colspan="10" class="text-slate-500">Chưa có đơn hàng</td></tr>`;
+function createReportPoSearch(onChoose, onEnter) {
+  const input = $("reportSearchInput");
+  const options = $("reportPoOptions");
+  let matches = [];
+  let activeIndex = -1;
+  const close = () => {
+    options.hidden = true;
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-activedescendant");
+  };
+  const choose = (orderCode) => {
+    input.value = orderCode;
+    close();
+    onChoose();
+  };
+  const render = () => {
+    const term = input.value.trim().toLocaleUpperCase("vi");
+    matches = reportState.summary.filter((row) => row.order_code.toLocaleUpperCase("vi").includes(term)).slice(0, 40);
+    activeIndex = -1;
+    options.replaceChildren();
+    if (!matches.length) {
+      const empty = document.createElement("div");
+      empty.className = "order-search-empty";
+      empty.textContent = reportState.summary.length ? "Không có mã PO phù hợp" : "Không có PO trong khoảng ngày này";
+      options.appendChild(empty);
+    } else {
+      matches.forEach((row, index) => {
+        const item = document.createElement("button");
+        item.type = "button";
+        item.id = `reportPoOptions-${index}`;
+        item.className = "order-search-option";
+        item.setAttribute("role", "option");
+        item.textContent = `${row.order_code} · ${row.part_code || ""}`;
+        item.addEventListener("mousedown", (event) => event.preventDefault());
+        item.addEventListener("click", () => choose(row.order_code));
+        options.appendChild(item);
+      });
+    }
+    options.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+  };
+  input.addEventListener("focus", render);
+  input.addEventListener("input", render);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      close();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (options.hidden) render();
+      if (!matches.length) return;
+      activeIndex = activeIndex < 0
+        ? (event.key === "ArrowDown" ? 0 : matches.length - 1)
+        : (activeIndex + (event.key === "ArrowDown" ? 1 : -1) + matches.length) % matches.length;
+      Array.from(options.querySelectorAll(".order-search-option")).forEach((item, index) => {
+        item.classList.toggle("active", index === activeIndex);
+        item.setAttribute("aria-selected", index === activeIndex ? "true" : "false");
+      });
+      input.setAttribute("aria-activedescendant", `reportPoOptions-${activeIndex}`);
+      options.children[activeIndex].scrollIntoView({ block: "nearest" });
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      if (!options.hidden && matches.length) choose(matches[activeIndex >= 0 ? activeIndex : 0].order_code);
+      else { close(); onEnter(); }
+    }
+  });
+  input.addEventListener("blur", () => setTimeout(close, 100));
+  return { close, refresh: () => { if (!options.hidden) render(); } };
+}
+
+function showReportList() {
+  reportState.orderCode = "";
+  reportState.detailRequestId += 1;
+  $("reportListView").classList.remove("hidden");
+  $("reportDetailView").classList.add("hidden");
+}
+
+function showReportTab(tabId) {
+  document.querySelectorAll("#reportListView .tab-btn").forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === tabId));
+  document.querySelectorAll("#reportListView .report-tab").forEach((tab) => tab.classList.toggle("hidden", tab.id !== tabId));
+}
+
+function reportPeriodLabel() {
+  const { date_from, date_to } = reportFilters();
+  if (date_from && date_from === date_to) return `Ngày ${formatDateDisplay(date_from)}`;
+  if (date_from && date_to) return `${formatDateDisplay(date_from)} – ${formatDateDisplay(date_to)}`;
+  if (date_from) return `Từ ${formatDateDisplay(date_from)}`;
+  if (date_to) return `Đến ${formatDateDisplay(date_to)}`;
+  return "Tất cả ngày";
+}
+
+function reportInfoItem(label, value) {
+  return `<div class="report-info-item"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value || "—")}</dd></div>`;
+}
+
+function setReportDetailLoading(message = "Đang tải...") {
+  $("reportDetailStatus").textContent = message;
+  for (const id of ["reportDetailOverview", "reportDetailInfo", "reportDetailProduction", "reportDetailQuality", "reportDetailReceipts"]) {
+    $(id).innerHTML = "";
+  }
+}
+
+async function openReportOrderDetail(orderCode) {
+  if (!reportState.summary.some((row) => row.order_code === orderCode)) {
+    toast("Mã PO không có dữ liệu trong khoảng ngày đang chọn", "warning");
     return;
   }
+  reportState.orderCode = orderCode;
+  $("reportListView").classList.add("hidden");
+  $("reportDetailView").classList.remove("hidden");
+  $("reportDetailTitle").textContent = `PO ${orderCode}`;
+  $("reportDetailPeriod").textContent = reportPeriodLabel();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+  await renderReportOrderDetail(orderCode);
+}
+
+async function renderReportOrderDetail(orderCode) {
+  const requestId = ++reportState.detailRequestId;
+  setReportDetailLoading();
+  const { date_from, date_to } = reportFilters();
+  const periodLabel = reportPeriodLabel();
   const qs = reportQueryString();
-  const rows = await api(`/api/reports/order/${encodeURIComponent(orderCode)}${qs ? `?${qs}` : ""}`);
-  $("detailTable").innerHTML = rows.map((row) => `
-    <tr class="${row.status || "todo"}">
-      <td class="mono font-bold">${displayLotCode(row.lot_code)}</td>
-      <td>${row.step_name || "Chưa khởi tạo"}</td>
-      <td><span class="badge ${row.status || "todo"}">${statusText(row.status || "todo")}</span></td>
-      <td>${escapeHtml(row.worker_name || "")}</td>
-      <td>${escapeHtml(row.tech_name || "")}</td>
-      <td>${row.machines_used || ""}</td>
-      <td class="font-bold text-green-700">${formatQty(row.qty_ok)}</td>
-      <td class="font-bold text-red-700">${formatQty(row.qty_ng)}</td>
-      <td>${escapeHtml(row.work_date || "")}</td>
-      <td>${escapeHtml(row.shift || "")}</td>
-    </tr>
-  `).join("") || `<tr><td colspan="10" class="text-slate-500">Không có dữ liệu trong khoảng thời gian này</td></tr>`;
+  const suffix = qs ? `?${qs}` : "";
+  try {
+    const [order, production, quality, warehouse] = await Promise.all([
+      api(`/api/orders/${encodeURIComponent(orderCode)}`),
+      api(`/api/reports/order/${encodeURIComponent(orderCode)}${suffix}`),
+      api(`/api/reports/order/${encodeURIComponent(orderCode)}/quality${suffix}`),
+      api(`/api/warehouse/orders/${encodeURIComponent(orderCode)}/detail`),
+    ]);
+    if (requestId !== reportState.detailRequestId || reportState.orderCode !== orderCode) return;
+    const lots = order.lots || [];
+    const productionOk = production.reduce((total, row) => total + (row.is_final_step ? Number(row.qty_ok || 0) : 0), 0);
+    const productionNg = production.reduce((total, row) => total + Number(row.qty_ng || 0), 0);
+    const receipts = (warehouse.lots || []).flatMap((lot) => lot.receipts || []).filter((receipt) => {
+      const day = String(receipt.receipt_date || receipt.created_at || "").slice(0, 10);
+      return (!date_from || day >= date_from) && (!date_to || day <= date_to);
+    });
+    const receipted = receipts.reduce((total, receipt) => total + Number(receipt.qty || 0), 0);
+    const activeLots = new Set(production.filter((row) => Number(row.qty_ok || 0) + Number(row.qty_ng || 0) > 0).map((row) => row.lot_code)).size;
+    $("reportDetailTitle").textContent = `PO ${order.order_code}`;
+    $("reportDetailPeriod").textContent = periodLabel;
+    $("reportDetailOverview").innerHTML = `
+      <div class="report-card"><div class="report-card-label">Lô SX</div><div class="report-card-value">${activeLots}/${lots.length}</div></div>
+      <div class="report-card"><div class="report-card-label">OK (OP cuối)</div><div class="report-card-value text-green-700">${formatQty(productionOk)}</div></div>
+      <div class="report-card"><div class="report-card-label">NG (các OP)</div><div class="report-card-value text-red-700">${formatQty(productionNg)}</div></div>
+      <div class="report-card"><div class="report-card-label">Nhập kho</div><div class="report-card-value text-blue-700">${formatQty(receipted)}</div></div>
+    `;
+    $("reportDetailStatus").textContent = "";
+    const orderFields = [
+      ["Mã PO", order.order_code], ["Mã hàng", order.part_code],
+      ["SL đơn", formatQty(order.total_qty)], ["PCS/lô", formatQty(order.qty_per_lot)],
+      ["Số lô", formatQty(order.total_lots)], ["Mã NVL", order.raw_material_code],
+      ["Bản vẽ", order.drawing_code], ["REV", order.drawing_rev],
+      ["Chất liệu", order.material], ["Kích thước phôi", order.blank_size],
+      ["Ngày nhận", formatDateDisplay(order.order_receive_date)],
+      ["Ngày xuất phôi", formatDateDisplay(order.blank_issue_date)],
+      ["Người giao", order.delivered_by], ["Người nhận", order.received_by],
+      ["Ngày tạo", formatDateTimeDisplay(order.created_at)],
+    ];
+    $("reportDetailInfo").innerHTML = orderFields.map(([label, value]) => reportInfoItem(label, value)).join("");
+    $("reportDetailProduction").innerHTML = production.map((row) => `
+      <tr><td class="mono font-bold">${escapeHtml(displayLotCode(row.lot_code))}</td>
+      <td>${escapeHtml(row.step_name || "—")}</td>
+      <td><span class="badge ${row.status || "todo"}">${escapeHtml(statusText(row.status || "todo"))}</span></td>
+      <td>${escapeHtml(row.worker_name || "—")}</td><td>${escapeHtml(row.tech_name || "—")}</td>
+      <td>${escapeHtml(row.machines_used || "—")}</td>
+      <td class="text-green-700 font-bold">${formatQty(row.qty_ok)}</td>
+      <td class="text-red-700 font-bold">${formatQty(row.qty_ng)}</td>
+      <td>${escapeHtml(formatDateDisplay(row.work_date) || "—")}</td>
+      <td>${escapeHtml(row.shift || "—")}</td></tr>
+    `).join("") || `<tr><td colspan="10">Không có dữ liệu sản xuất trong khoảng ngày này</td></tr>`;
+    $("reportDetailQuality").innerHTML = quality.map((row) => `
+      <tr><td>${escapeHtml(row.kind)}</td><td class="mono">${escapeHtml(displayLotCode(row.lot_code))}</td>
+      <td>${escapeHtml(formatDateDisplay(row.form_date) || "—")}</td>
+      <td>${escapeHtml(row.check_name || "—")}</td><td>${formatQty(row.qty_ok)}</td><td>${formatQty(row.qty_ng)}</td>
+      <td>${escapeHtml(row.actor || "—")}</td><td>${escapeHtml(row.defect_content || "—")}</td></tr>
+    `).join("") || `<tr><td colspan="8">Không có dữ liệu QC/Bavia/kho trong khoảng ngày này</td></tr>`;
+    $("reportDetailReceipts").innerHTML = receipts.map((row) => `
+      <tr><td class="mono">${escapeHtml(displayLotCode(row.lot_code))}</td>
+      <td>${escapeHtml(formatDateDisplay(row.receipt_date || row.created_at) || "—")}</td>
+      <td>${formatQty(row.qty)}</td><td>${escapeHtml(row.note || "—")}</td></tr>
+    `).join("") || `<tr><td colspan="4">Không có phiếu nhập kho trong khoảng ngày này</td></tr>`;
+  } catch (err) {
+    if (requestId !== reportState.detailRequestId) return;
+    $("reportDetailStatus").textContent = `Không tải được chi tiết: ${err.message}`;
+    toast(err.message, "error");
+  }
+}
+
+async function loadReports() {
+  const requestId = ++reportState.loadRequestId;
+  // Chặn phản hồi chi tiết của bộ lọc cũ hiển thị trong lúc tải kỳ mới.
+  reportState.detailRequestId += 1;
+  if (reportState.orderCode) {
+    $("reportDetailPeriod").textContent = reportPeriodLabel();
+    setReportDetailLoading();
+  }
+  setupReportTables();
+  const qs = reportQueryString();
+  const [summaryRes, machinesRes] = await Promise.all([
+    api(`/api/reports/summary${qs ? `?${qs}` : ""}`),
+    api(`/api/reports/machines${qs ? `?${qs}` : ""}`),
+  ].map((p) => p.catch((err) => ({ __error: err }))));
+  if (requestId !== reportState.loadRequestId) return;
+  reportState.summary = summaryRes.__error ? [] : summaryRes;
+  reportState.machines = machinesRes.__error ? [] : machinesRes;
+  reportPoSearch?.refresh();
+  if (summaryRes.__error) toast(summaryRes.__error.message, "error");
+  if (machinesRes.__error) toast(machinesRes.__error.message, "error");
+  renderReportCards(reportState.summary);
+  renderReportSummaryTable();
+  renderMachineReport(reportState.machines);
+  if (reportState.orderCode) {
+    await renderReportOrderDetail(reportState.orderCode);
+  }
 }
 
 async function loadMachineReport() {
@@ -2864,8 +3132,27 @@ async function loadMachineReport() {
 }
 
 function wireReports() {
-  ensureReportMachineTab();
   setupReportTables();
+  const applySearch = () => {
+    reportState.searchTerm = $("reportSearchInput").value.trim();
+    showReportTab("summaryTab");
+    renderReportSummaryTable();
+  };
+  reportPoSearch = createReportPoSearch(applySearch, applySearch);
+  on("reportSearchBtn", "click", () => {
+    reportPoSearch.close();
+    applySearch();
+  });
+  on("reportClearSearchBtn", "click", () => {
+    $("reportSearchInput").value = "";
+    reportPoSearch.close();
+    applySearch();
+  });
+  on("reportBackBtn", "click", showReportList);
+  on("summaryTable", "click", (event) => {
+    const button = event.target.closest("[data-report-order]");
+    if (button) openReportOrderDetail(button.dataset.reportOrder);
+  });
   on("refreshReportBtn", "click", () => loadReports().catch((err) => toast(err.message, "error")));
   on("applyReportFilterBtn", "click", () => loadReports().catch((err) => toast(err.message, "error")));
   on("clearReportFilterBtn", "click", () => {
@@ -2884,13 +3171,9 @@ function wireReports() {
     reportYearRange();
     loadReports().catch((err) => toast(err.message, "error"));
   });
-  on("reportOrderSelect", "change", (e) => loadOrderDetail(e.target.value));
   document.querySelectorAll("[data-tab]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      document.querySelectorAll(".tab-btn").forEach((x) => x.classList.remove("active"));
-      document.querySelectorAll(".report-tab").forEach((x) => x.classList.add("hidden"));
-      btn.classList.add("active");
-      $(btn.dataset.tab).classList.remove("hidden");
+      showReportTab(btn.dataset.tab);
       if (btn.dataset.tab === "machineTab") loadMachineReport().catch((err) => toast(err.message, "error"));
     });
   });
@@ -2940,32 +3223,6 @@ function reportYearRange() {
   setReportDateRange(`${year}-01-01`, `${year}-12-31`);
 }
 
-function ensureReportMachineTab() {
-  if ($("machineTab")) return;
-  const detailTab = $("detailTab");
-  if (!detailTab) return;
-  detailTab.insertAdjacentHTML("afterend", `
-    <div id="machineTab" class="report-tab hidden">
-      <div class="legend-box mb-4">
-        <span class="legend-chip bg-blue-100 text-blue-800 border-blue-200">Hiệu suất máy</span>
-        <span>Tính theo tổng cycle time quy đổi chia cho 11 tiếng.</span>
-      </div>
-      <div class="table-wrap">
-        <table class="data-table warehouse-table">
-          <thead>
-            <tr><th class="text-center">Máy</th><th class="text-center">Tên máy</th><th class="text-center">Số log</th><th class="text-center">Số lô</th><th class="text-center">Số đơn</th><th class="text-center">Sản lượng</th><th class="text-center">Cycle time quy đổi</th><th class="text-center">Hiệu suất</th></tr>
-          </thead>
-          <tbody id="machineTable"></tbody>
-        </table>
-      </div>
-    </div>
-  `);
-  const detailButton = document.querySelector('[data-tab="detailTab"]');
-  if (detailButton && !document.querySelector('[data-tab="machineTab"]')) {
-    detailButton.insertAdjacentHTML("afterend", '<button class="tab-btn" data-tab="machineTab">Hiệu suất máy</button>');
-  }
-}
-
 function setupReportTables() {
   const summaryHead = document.querySelector("#summaryTab table thead");
   if (summaryHead && !summaryHead.dataset.ready) {
@@ -2974,10 +3231,8 @@ function setupReportTables() {
         <th class="text-center">Mã PO</th>
         <th class="text-center">Mã hàng</th>
         <th class="text-center">Tổng SL</th>
-        <th class="text-center">Số lô</th>
-        <th class="text-center">Hoàn thành</th>
-        <th class="text-center">OK</th>
-        <th class="text-center">NG</th>
+        <th class="text-center">OK (OP cuối)</th>
+        <th class="text-center">NG (các OP)</th>
         <th class="text-center">Đã vào kho</th>
         <th class="text-center">Tỷ lệ NG</th>
         <th class="text-center">Đánh giá</th>
@@ -2985,27 +3240,9 @@ function setupReportTables() {
     `;
     summaryHead.dataset.ready = "1";
   }
-  const detailHead = document.querySelector("#detailTab table thead");
-  if (detailHead && !detailHead.dataset.ready) {
-    detailHead.innerHTML = `
-      <tr>
-        <th class="text-center">Lô</th>
-        <th class="text-center">Công đoạn</th>
-        <th class="text-center">Trạng thái</th>
-        <th class="text-center">Người làm</th>
-        <th class="text-center">Kỹ thuật</th>
-        <th class="text-center">Máy thực hiện</th>
-        <th class="text-center">OK</th>
-        <th class="text-center">NG</th>
-        <th class="text-center">Ngày</th>
-        <th class="text-center">Kíp</th>
-      </tr>
-    `;
-    detailHead.dataset.ready = "1";
-  }
 }
 
-function renderReportCards(summary, machines) {
+function renderReportCards(summary) {
   const el = $("reportCards");
   if (!el) return;
   const totalOrders = summary.length;
@@ -3015,18 +3252,14 @@ function renderReportCards(summary, machines) {
   const totalWarehoused = summary.reduce((sum, row) => sum + Number(row.total_receipted || 0), 0);
   const ngRate = totalOk + totalNg ? Math.round((totalNg * 10000) / (totalOk + totalNg)) / 100 : 0;
   const topNg = summary.reduce((best, row) => (!best || Number(row.total_ng || 0) > Number(best.total_ng || 0) ? row : best), null);
-  const avgMachineEff = machines.length
-    ? Math.round((machines.reduce((sum, row) => sum + Number(row.efficiency_percent || 0), 0) / machines.length) * 100) / 100
-    : 0;
   el.innerHTML = `
-    <div class="report-card"><div class="report-card-label">Số đơn hàng</div><div class="report-card-value">${formatQty(totalOrders)}</div><div class="report-card-note">Theo bộ lọc hiện tại</div></div>
-    <div class="report-card"><div class="report-card-label">Tổng sản lượng</div><div class="report-card-value">${formatQty(totalQty)}</div><div class="report-card-note">Tổng số lượng của các đơn</div></div>
-    <div class="report-card"><div class="report-card-label">Tổng OK</div><div class="report-card-value text-green-700">${formatQty(totalOk)}</div><div class="report-card-note">Theo QC sản xuất</div></div>
-    <div class="report-card"><div class="report-card-label">Tổng NG</div><div class="report-card-value text-red-700">${formatQty(totalNg)}</div><div class="report-card-note">Theo QC sản xuất</div></div>
-    <div class="report-card"><div class="report-card-label">Đã vào kho</div><div class="report-card-value text-blue-700">${formatQty(totalWarehoused)}</div><div class="report-card-note">Phiếu nhập kho thành phẩm</div></div>
-    <div class="report-card"><div class="report-card-label">Đơn NG nhiều nhất</div><div class="report-card-value">${escapeHtml(topNg ? topNg.order_code : "—")}</div><div class="report-card-note">${topNg ? `${topNg.total_ng} NG · ${topNg.ng_rate}%` : "Chưa có dữ liệu"}</div></div>
-    <div class="report-card"><div class="report-card-label">Tỷ lệ NG TB</div><div class="report-card-value">${ngRate}%</div><div class="report-card-note">Tổng NG / (OK + NG)</div></div>
-    <div class="report-card"><div class="report-card-label">Hiệu suất máy TB</div><div class="report-card-value">${avgMachineEff}%</div><div class="report-card-note">Theo cycle time quy đổi</div></div>
+    <div class="report-card"><div class="report-card-label">Số đơn</div><div class="report-card-value">${formatQty(totalOrders)}</div></div>
+    <div class="report-card"><div class="report-card-label">SL đơn</div><div class="report-card-value">${formatQty(totalQty)}</div></div>
+    <div class="report-card"><div class="report-card-label">OK (OP cuối)</div><div class="report-card-value text-green-700">${formatQty(totalOk)}</div></div>
+    <div class="report-card"><div class="report-card-label">NG (các OP)</div><div class="report-card-value text-red-700">${formatQty(totalNg)}</div></div>
+    <div class="report-card"><div class="report-card-label">Đã vào kho</div><div class="report-card-value text-blue-700">${formatQty(totalWarehoused)}</div></div>
+    <div class="report-card"><div class="report-card-label">NG nhiều nhất</div><div class="report-card-value">${escapeHtml(topNg ? topNg.order_code : "—")}</div><div class="report-card-note">${topNg ? `${topNg.total_ng} NG · ${topNg.ng_rate}%` : "Chưa có dữ liệu"}</div></div>
+    <div class="report-card"><div class="report-card-label">Tỷ lệ NG</div><div class="report-card-value">${ngRate}%</div></div>
   `;
 }
 

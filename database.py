@@ -1745,24 +1745,75 @@ def update_entry(form_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     return get_entry(form_id) or entry
 
 
+FINAL_STEP_CTE = """
+final_steps AS (
+  SELECT part_code, step_name
+  FROM (
+    SELECT p.part_code, ps.step_name,
+           ROW_NUMBER() OVER (PARTITION BY p.part_code ORDER BY ps.step_order DESC, ps.id DESC) AS rn
+    FROM parts p
+    JOIN part_steps ps ON ps.part_id = p.id
+  )
+  WHERE rn = 1
+)
+"""
+
+
 def get_summary_report(date_from: str | None = None, date_to: str | None = None) -> list[dict[str, Any]]:
-    """Báo cáo tổng quan theo đơn hàng: hoàn thành, OK/NG, đã vào kho và tỷ lệ NG."""
+    """Báo cáo đơn có sản xuất trong kỳ; OK từ OP cuối, NG từ các OP."""
     with connect() as conn:
-        where_clause = ""
-        params: list[Any] = []
-        effective_date_expr = "COALESCE(NULLIF(order_receive_date, ''), substr(created_at, 1, 10))"
+        date_values: list[str] = []
         if date_from:
-            where_clause += f" AND {effective_date_expr} >= ?"
-            params.append(date_from)
+            date_values.append(date_from)
         if date_to:
-            where_clause += f" AND {effective_date_expr} <= ?"
-            params.append(date_to)
+            date_values.append(date_to)
+        filtered = bool(date_values)
+
+        def date_conditions(expression: str) -> str:
+            conditions = []
+            if date_from:
+                conditions.append(f"{expression} >= ?")
+            if date_to:
+                conditions.append(f"{expression} <= ?")
+            return " AND ".join(conditions)
+
+        order_filter = ""
+        if filtered:
+            machine_date = "DATE(COALESCE(NULLIF(sml.work_date, ''), NULLIF(se.work_date, ''), sml.created_at))"
+            activity_cte = f"""
+            activity AS (
+              SELECT l.order_code, l.part_code, se.step_name, sml.qty_ok, sml.qty_ng
+              FROM step_machine_logs sml
+              JOIN step_entries se ON se.form_id = sml.form_id
+              JOIN lots l ON l.lot_code = se.lot_code
+              WHERE {date_conditions(machine_date)}
+              UNION ALL
+              SELECT l.order_code, l.part_code, se.step_name, se.qty_ok, se.qty_ng
+              FROM step_entries se
+              JOIN lots l ON l.lot_code = se.lot_code
+              WHERE NOT EXISTS (SELECT 1 FROM step_machine_logs sml WHERE sml.form_id = se.form_id)
+                AND {date_conditions('DATE(se.work_date)')}
+            ),
+            """
+            order_filter = "WHERE EXISTS (SELECT 1 FROM activity a WHERE a.order_code = o.order_code)"
+        else:
+            activity_cte = """
+            activity AS (
+              SELECT l.order_code, l.part_code, se.step_name, se.qty_ok, se.qty_ng
+              FROM lots l
+              JOIN step_entries se ON se.lot_code = l.lot_code
+            ),
+            """
+        receipt_date = "DATE(COALESCE(NULLIF(r.receipt_date, ''), r.created_at))"
+        receipt_filter = f"WHERE {date_conditions(receipt_date)}" if filtered else ""
+        params: list[Any] = date_values * (3 if filtered else 0)
         return conn.execute(
             f"""
-            WITH filtered_orders AS (
-              SELECT order_code, part_code, total_qty, qty_per_lot, planned_lots, total_lots, created_at
-              FROM orders
-              WHERE 1=1{where_clause}
+            WITH {FINAL_STEP_CTE}, {activity_cte} filtered_orders AS (
+              SELECT o.order_code, o.part_code, o.total_qty, o.qty_per_lot,
+                     o.planned_lots, o.total_lots, o.created_at
+              FROM orders o
+              {order_filter}
             ),
             lot_stats AS (
               SELECT l.order_code,
@@ -1785,19 +1836,21 @@ def get_summary_report(date_from: str | None = None, date_to: str | None = None)
               GROUP BY order_code
             ),
             entry_stats AS (
-              SELECT fo.order_code,
-                     COALESCE(SUM(se.qty_ok), 0) AS total_ok,
-                     COALESCE(SUM(se.qty_ng), 0) AS total_ng
-              FROM filtered_orders fo
-              JOIN lots l ON l.order_code = fo.order_code
-              JOIN step_entries se ON se.lot_code = l.lot_code
-              GROUP BY fo.order_code
+              SELECT a.order_code,
+                     COALESCE(SUM(CASE
+                       WHEN UPPER(TRIM(a.step_name)) = UPPER(TRIM(fs.step_name)) THEN a.qty_ok
+                       ELSE 0 END), 0) AS total_ok,
+                     COALESCE(SUM(a.qty_ng), 0) AS total_ng
+              FROM activity a
+              LEFT JOIN final_steps fs ON fs.part_code = a.part_code
+              GROUP BY a.order_code
             ),
             receipt_stats AS (
               SELECT l.order_code,
                      COALESCE(SUM(r.qty), 0) AS total_receipted
               FROM lot_warehouse_receipts r
               JOIN lots l ON l.lot_code = r.lot_code
+              {receipt_filter}
               GROUP BY l.order_code
             )
             SELECT fo.*,
@@ -1825,10 +1878,79 @@ def get_summary_report(date_from: str | None = None, date_to: str | None = None)
 
 def get_order_report(order_code: str, date_from: str | None = None, date_to: str | None = None) -> list[dict[str, Any]]:
     """Báo cáo chi tiết từng lô/công đoạn của một đơn hàng."""
+    if date_from or date_to:
+        date_values = [value for value in (date_from, date_to) if value]
+
+        def date_conditions(expression: str) -> str:
+            conditions = []
+            if date_from:
+                conditions.append(f"{expression} >= ?")
+            if date_to:
+                conditions.append(f"{expression} <= ?")
+            return " AND ".join(conditions)
+
+        machine_date = "DATE(COALESCE(NULLIF(sml.work_date, ''), NULLIF(se.work_date, ''), sml.created_at))"
+        with connect() as conn:
+            return conn.execute(
+                f"""
+                WITH {FINAL_STEP_CTE}, period_logs AS (
+                  SELECT sml.form_id, sml.machine_code, sml.qty_ok, sml.qty_ng, sml.shift,
+                         {machine_date} AS work_date
+                  FROM step_machine_logs sml
+                  JOIN step_entries se ON se.form_id = sml.form_id
+                  WHERE {date_conditions(machine_date)}
+                ),
+                log_totals AS (
+                  SELECT form_id, SUM(qty_ok) AS qty_ok, SUM(qty_ng) AS qty_ng,
+                         MAX(work_date) AS work_date,
+                         GROUP_CONCAT(DISTINCT NULLIF(shift, '')) AS shift
+                  FROM period_logs
+                  GROUP BY form_id
+                ),
+                legacy_entries AS (
+                  SELECT se.form_id, se.qty_ok, se.qty_ng, se.work_date, se.shift
+                  FROM step_entries se
+                  WHERE NOT EXISTS (SELECT 1 FROM step_machine_logs sml WHERE sml.form_id = se.form_id)
+                    AND {date_conditions('DATE(se.work_date)')}
+                ),
+                machine_usage AS (
+                  SELECT form_id, GROUP_CONCAT(machine_text, ', ') AS machines_used
+                  FROM (
+                    SELECT form_id, machine_code || ' (' || SUM(qty_ok + qty_ng) || ')' AS machine_text
+                    FROM period_logs
+                    GROUP BY form_id, machine_code
+                    ORDER BY form_id, machine_code
+                  )
+                  GROUP BY form_id
+                )
+                SELECT l.lot_code, l.qty_per_lot, l.lot_index, se.step_name, se.form_id,
+                       se.status,
+                       CASE WHEN UPPER(TRIM(se.step_name)) = UPPER(TRIM(fs.step_name)) THEN 1 ELSE 0 END AS is_final_step,
+                       COALESCE(lt.qty_ok, le.qty_ok, 0) AS qty_ok,
+                       COALESCE(lt.qty_ng, le.qty_ng, 0) AS qty_ng,
+                       se.worker_name, se.tech_name,
+                       COALESCE(lt.work_date, le.work_date, '') AS work_date,
+                       COALESCE(lt.shift, le.shift, se.shift, '') AS shift,
+                       COALESCE(mu.machines_used, '') AS machines_used
+                FROM lots l
+                JOIN step_entries se ON se.lot_code = l.lot_code
+                LEFT JOIN final_steps fs ON fs.part_code = l.part_code
+                LEFT JOIN log_totals lt ON lt.form_id = se.form_id
+                LEFT JOIN legacy_entries le ON le.form_id = se.form_id
+                LEFT JOIN machine_usage mu ON mu.form_id = se.form_id
+                WHERE l.order_code = ? AND (lt.form_id IS NOT NULL OR le.form_id IS NOT NULL)
+                  AND (se.status != 'todo' OR EXISTS (
+                    SELECT 1 FROM step_machine_logs sml WHERE sml.form_id = se.form_id
+                  ))
+                ORDER BY l.lot_index, se.id
+                """,
+                date_values + date_values + [order_code],
+            ).fetchall()
+
     with connect() as conn:
         return conn.execute(
             f"""
-            WITH machine_first AS (
+            WITH {FINAL_STEP_CTE}, machine_first AS (
               SELECT form_id, work_date, shift
               FROM (
                 SELECT form_id, work_date, shift,
@@ -1851,21 +1973,81 @@ def get_order_report(order_code: str, date_from: str | None = None, date_to: str
               GROUP BY form_id
             )
             SELECT l.lot_code, l.qty_per_lot, l.lot_index, se.step_name, se.form_id,
+                   CASE WHEN UPPER(TRIM(se.step_name)) = UPPER(TRIM(fs.step_name)) THEN 1 ELSE 0 END AS is_final_step,
                    se.status, se.qty_ok, se.qty_ng, se.worker_name, se.tech_name,
                    COALESCE(mf.work_date, se.work_date, '') AS work_date,
                    COALESCE(mf.shift, se.shift, '') AS shift,
                    COALESCE(mu.machines_used, '') AS machines_used
             FROM lots l
-            LEFT JOIN step_entries se ON se.lot_code = l.lot_code
+            JOIN step_entries se ON se.lot_code = l.lot_code
+            LEFT JOIN final_steps fs ON fs.part_code = l.part_code
             LEFT JOIN machine_first mf ON mf.form_id = se.form_id
             LEFT JOIN machine_usage mu ON mu.form_id = se.form_id
             WHERE l.order_code = ?
+              AND (se.status != 'todo' OR EXISTS (
+                SELECT 1 FROM step_machine_logs sml WHERE sml.form_id = se.form_id
+              ))
             {f" AND COALESCE(NULLIF(se.work_date, ''), NULLIF(mf.work_date, ''), '') >= ?" if date_from else ""}
             {f" AND COALESCE(NULLIF(se.work_date, ''), NULLIF(mf.work_date, ''), '') <= ?" if date_to else ""}
             ORDER BY l.lot_index, se.id
             """,
             [order_code] + ([date_from] if date_from else []) + ([date_to] if date_to else []),
         ).fetchall()
+
+
+def get_order_quality_report(order_code: str, date_from: str | None = None, date_to: str | None = None) -> list[dict[str, Any]]:
+    """Các dòng QC, Bavia và kiểm tra kho của đơn trong khoảng ngày chọn."""
+    date_values = [value for value in (date_from, date_to) if value]
+
+    def date_conditions(expression: str) -> str:
+        conditions = []
+        if date_from:
+            conditions.append(f"{expression} >= ?")
+        if date_to:
+            conditions.append(f"{expression} <= ?")
+        return " AND ".join(conditions) or "1=1"
+
+    form_types = (
+        ("QC gia công", "lot_qc_forms", "lot_qc_rows", "qc_date", "inspector"),
+        ("QC Bavia", "lot_bavia_forms", "lot_bavia_rows", "bavia_date", "inspector"),
+        ("Kiểm tra kho", "lot_warehouse_forms", "lot_warehouse_rows", "warehouse_date", "performer"),
+    )
+    with connect() as conn:
+        if not conn.execute("SELECT 1 FROM orders WHERE order_code = ?", (order_code,)).fetchone():
+            raise LookupError("Không tìm thấy đơn hàng")
+        result: list[dict[str, Any]] = []
+        for kind, form_table, row_table, date_column, actor_column in form_types:
+            form_date = f"DATE(COALESCE(NULLIF(f.{date_column}, ''), f.created_at))"
+            result.extend(conn.execute(
+                f"""
+                SELECT ? AS kind, l.lot_code, l.lot_index,
+                       {form_date} AS form_date, r.line_index, r.check_name,
+                       r.qty_ok, r.qty_ng, r.defect_content,
+                       r.{actor_column} AS actor
+                FROM {form_table} f
+                JOIN lots l ON l.lot_code = f.lot_code
+                JOIN {row_table} r ON r.lot_code = f.lot_code
+                WHERE l.order_code = ? AND {date_conditions(form_date)}
+                """,
+                [kind, order_code, *date_values],
+            ).fetchall())
+        work_date = "DATE(COALESCE(NULLIF(r.work_date, ''), r.created_at))"
+        result.extend(conn.execute(
+            f"""
+            SELECT 'Gia công Bavia' AS kind, l.lot_code, l.lot_index,
+                   {work_date} AS form_date, r.line_index,
+                   COALESCE(m.machine_name, r.machine_code, '') AS check_name,
+                   r.qty_ok, r.qty_ng, r.note AS defect_content,
+                   COALESCE(w.worker_name, r.worker_code, '') AS actor
+            FROM lot_bavia_work_rows r
+            JOIN lots l ON l.lot_code = r.lot_code
+            LEFT JOIN machines m ON m.machine_code = r.machine_code
+            LEFT JOIN workers w ON w.worker_code = r.worker_code
+            WHERE l.order_code = ? AND {date_conditions(work_date)}
+            """,
+            [order_code, *date_values],
+        ).fetchall())
+        return sorted(result, key=lambda row: (row["lot_index"], row["form_date"] or "", row["kind"], row["line_index"]))
 
 
 def get_machine_efficiency_report(date_from: str | None = None, date_to: str | None = None) -> list[dict[str, Any]]:

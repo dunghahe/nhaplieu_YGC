@@ -592,6 +592,15 @@ def api_order_report(order_code: str, date_from: str | None = Query(None), date_
     return database.get_order_report(order_code.upper(), date_from, date_to)
 
 
+@app.get("/api/reports/order/{order_code}/quality")
+def api_order_quality_report(order_code: str, date_from: str | None = Query(None), date_to: str | None = Query(None)):
+    """Dữ liệu QC, Bavia và kiểm tra kho trong đơn hàng."""
+    try:
+        return database.get_order_quality_report(order_code.upper(), date_from, date_to)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.get("/api/reports/machines")
 def api_machine_report(date_from: str | None = Query(None), date_to: str | None = Query(None)):
     """Báo cáo hiệu suất máy."""

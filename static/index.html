@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="/static/style.css?v=34">
+    <link rel="stylesheet" href="/static/style.css?v=38">
 </head>
 <body class="bg-slate-100 text-slate-900">
   <div id="toastHost" class="fixed right-4 top-4 z-50 space-y-3"></div>
@@ -209,8 +209,11 @@
             <div class="panel flex-1">
               <div class="mb-3">
                 <div class="panel-title mb-1">Đơn/lô đã tạo</div>
-                <p class="text-sm font-semibold text-slate-500 mb-2">Chọn PO để xem các lô, bấm vào mã lô để đưa lên ô quét.</p>
-                <select id="lotOrderSelect" class="input"></select>
+                <p class="text-sm font-semibold text-slate-500 mb-2">Gõ mã PO hoặc mã hàng để tìm, chọn đơn rồi bấm vào mã lô.</p>
+                <div class="order-search">
+                  <input id="lotOrderSelect" class="input" type="search" autocomplete="off" placeholder="Gõ mã PO hoặc mã hàng" aria-label="Tìm đơn hàng để xem lô" aria-controls="lotOrderOptions" aria-expanded="false" role="combobox" aria-autocomplete="list">
+                  <div id="lotOrderOptions" class="order-search-options" role="listbox" hidden></div>
+                </div>
               </div>
               <div id="lotHintGrid" class="flex flex-col gap-2 max-h-[60vh] overflow-y-auto pr-1"></div>
             </div>
@@ -236,12 +239,12 @@
         </div>
 
         <div class="panel">
-          <div class="mb-4 flex flex-wrap items-end gap-3">
-            <div>
+          <div class="report-filter-bar mb-3 flex flex-wrap items-end gap-2">
+            <div class="report-date-field">
               <label class="field-label" for="reportDateFrom">Từ ngày</label>
               <input id="reportDateFrom" type="date" class="input">
             </div>
-            <div>
+            <div class="report-date-field">
               <label class="field-label" for="reportDateTo">Đến ngày</label>
               <input id="reportDateTo" type="date" class="input">
             </div>
@@ -252,44 +255,73 @@
             <button id="clearReportFilterBtn" class="btn secondary">Xóa lọc</button>
           </div>
 
-          <div id="reportCards" class="report-cards-grid mb-4"></div>
+          <div id="reportListView">
+            <div id="reportCards" class="report-cards-grid mb-3"></div>
 
-          <div class="mb-4 flex flex-wrap items-center gap-3">
-            <button class="tab-btn active" data-tab="summaryTab">Tổng quan</button>
-            <button class="tab-btn" data-tab="detailTab">Chi tiết đơn hàng</button>
-            <button class="tab-btn" data-tab="machineTab">Hiệu suất máy</button>
-            <select id="reportOrderSelect" class="input max-w-xs"></select>
+            <div class="mb-3 flex flex-wrap items-center gap-2">
+              <button class="tab-btn active" data-tab="summaryTab">Tổng quan</button>
+              <button class="tab-btn" data-tab="machineTab">Hiệu suất máy</button>
+            </div>
+
+            <div id="summaryTab" class="report-tab">
+              <div class="report-po-search mb-3">
+                <div class="report-po-search-field">
+                  <label class="field-label" for="reportSearchInput">Tìm mã PO</label>
+                  <div class="order-search">
+                    <input id="reportSearchInput" class="input w-full" type="search" autocomplete="off" placeholder="Gõ mã PO" role="combobox" aria-autocomplete="list" aria-controls="reportPoOptions" aria-expanded="false">
+                    <div id="reportPoOptions" class="order-search-options" role="listbox" hidden></div>
+                  </div>
+                </div>
+                <button id="reportSearchBtn" class="btn primary" type="button">Tìm</button>
+                <button id="reportClearSearchBtn" class="btn secondary" type="button">Xóa</button>
+              </div>
+              <div class="legend-box mb-3">
+                <span class="legend-chip bg-red-100 text-red-800 border-red-200">Dòng đỏ: NG &gt; 5%</span>
+              </div>
+              <div class="table-wrap">
+                <table class="data-table">
+                  <thead>
+                    <tr><th>Mã PO</th><th>Mã hàng</th><th>Tổng SL</th><th>OK (OP cuối)</th><th>NG (các OP)</th><th>Đã vào kho</th><th>Tỉ lệ NG</th><th>Đánh giá</th></tr>
+                  </thead>
+                  <tbody id="summaryTable"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div id="machineTab" class="report-tab hidden">
+              <div class="legend-box mb-4">
+                <span class="legend-chip bg-blue-100 text-blue-800 border-blue-200">Hiệu suất máy</span>
+                <span>Tính theo tổng cycle time quy đổi chia cho 11 tiếng.</span>
+              </div>
+              <div class="table-wrap">
+                <table class="data-table warehouse-table">
+                  <thead>
+                    <tr><th class="text-center">Máy</th><th class="text-center">Tên máy</th><th class="text-center">Số log</th><th class="text-center">Số lô</th><th class="text-center">Số đơn</th><th class="text-center">Sản lượng</th><th class="text-center">Cycle time quy đổi</th><th class="text-center">Hiệu suất</th></tr>
+                  </thead>
+                  <tbody id="machineTable"></tbody>
+                </table>
+              </div>
+            </div>
           </div>
 
-          <div id="summaryTab" class="report-tab">
-            <div class="legend-box mb-4">
-              <span class="legend-chip bg-red-100 text-red-800 border-red-200">Cảnh báo NG cao</span>
-              <span>Dòng màu đỏ nghĩa là tỉ lệ NG của đơn hàng lớn hơn 5%. Dòng không tô đỏ là bình thường.</span>
+          <div id="reportDetailView" class="hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+              <div>
+                <button id="reportBackBtn" class="btn secondary mb-3" type="button">← Tổng quan</button>
+                <h3 id="reportDetailTitle" class="text-xl font-extrabold"></h3>
+                <p id="reportDetailPeriod" class="text-sm text-slate-500 mt-1"></p>
+              </div>
             </div>
-            <div class="table-wrap">
-              <table class="data-table">
-                <thead>
-                  <tr><th>Mã PO</th><th>Mã hàng</th><th>Tổng SL</th><th>Số lô</th><th>Hoàn thành</th><th>Tổng OK</th><th>Tổng NG</th><th>Tỉ lệ NG</th><th>Đánh giá</th></tr>
-                </thead>
-                <tbody id="summaryTable"></tbody>
-              </table>
-            </div>
-          </div>
-
-          <div id="detailTab" class="report-tab hidden">
-            <div class="legend-box mb-4">
-              <span class="legend-chip bg-white text-slate-700 border-slate-300">Chưa nhập</span>
-              <span class="legend-chip bg-yellow-100 text-yellow-800 border-yellow-200">Đang nhập</span>
-              <span class="legend-chip bg-green-100 text-green-800 border-green-200">Hoàn thành</span>
-            </div>
-            <div class="table-wrap">
-              <table class="data-table">
-                <thead>
-                  <tr><th>Lô</th><th>Công đoạn</th><th>Trạng thái</th><th>Máy thực hiện</th><th>OK</th><th>NG</th><th>Ngày</th><th>Kíp</th></tr>
-                </thead>
-                <tbody id="detailTable"></tbody>
-              </table>
-            </div>
+            <div id="reportDetailOverview" class="report-cards-grid mb-4"></div>
+            <p id="reportDetailStatus" class="text-sm text-slate-500" role="status"></p>
+            <h4 class="report-section-title">Thông tin PO</h4>
+            <div id="reportDetailInfo" class="report-info-grid mb-5"></div>
+            <h4 class="report-section-title">Sản xuất</h4>
+            <div class="table-wrap mb-5"><table class="data-table"><thead><tr><th>Lô</th><th>Công đoạn</th><th>Trạng thái hiện tại</th><th>Nhân công</th><th>Kỹ thuật</th><th>Máy thực hiện</th><th>OK</th><th>NG</th><th>Ngày</th><th>Kíp</th></tr></thead><tbody id="reportDetailProduction"></tbody></table></div>
+            <h4 class="report-section-title">QC / Bavia / Kho</h4>
+            <div class="table-wrap mb-5"><table class="data-table"><thead><tr><th>Loại</th><th>Lô</th><th>Ngày</th><th>Nội dung / máy</th><th>OK</th><th>NG</th><th>Người thực hiện</th><th>Lỗi / ghi chú</th></tr></thead><tbody id="reportDetailQuality"></tbody></table></div>
+            <h4 class="report-section-title">Nhập kho</h4>
+            <div class="table-wrap"><table class="data-table"><thead><tr><th>Lô</th><th>Ngày nhập</th><th>Số lượng</th><th>Ghi chú</th></tr></thead><tbody id="reportDetailReceipts"></tbody></table></div>
           </div>
         </div>
       </section>
@@ -569,6 +601,6 @@
   </div>
 
   <div id="print-area" class="print-area hidden"></div>
-    <script src="/static/app.js?v=37"></script>
+  <script src="/static/app.js?v=44"></script>
 </body>
 </html>
